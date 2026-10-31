@@ -56,11 +56,13 @@ use_pkg = not (os.environ.get("OCIO_CFLAGS") and os.environ.get("OCIO_LIBS")
 for name, lib in (("OpenColorIO", "OCIO"), ("OpenImageIO", "OIIO")):
 	if not use_pkg:
 		break
-	flags = try_pkg(["pkg-config", "--cflags", "--libs", name])
-	if flags is None:
+	cflags = try_pkg(["pkg-config", "--cflags", name])
+	libs = try_pkg(["pkg-config", "--libs", name])
+	if cflags is None or libs is None:
 		print("pkg-config cannot find %s (needed by the OCIO extension)" % name)
 		Exit(1)
-	env.Append(CCFLAGS=flags, LINKFLAGS=flags)
+	env.Append(CCFLAGS=cflags)  # --cflags only: -l/-L are link flags
+	env.Append(LINKFLAGS=libs)
 	libdir = try_pkg(["pkg-config", "--variable=libdir", name])
 	# no -Wl,-rpath on Windows; rpath=0 skips it for portable/bundled builds
 	if libdir and env["platform"] != "windows" and int(ARGUMENTS.get("rpath", "1")):

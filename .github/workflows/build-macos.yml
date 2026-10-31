@@ -48,10 +48,12 @@ jobs:
           curl -Ls https://micro.mamba.pm/api/micromamba/osx-arm64/latest | tar -xj -C "$RUNNER_TEMP" bin/micromamba
           MM="$RUNNER_TEMP/bin/micromamba"
           export MAMBA_ROOT_PREFIX="$RUNNER_TEMP/mamba"
+          # fmt: OIIO headers #include <fmt/format.h> but libopenimageio does
+          # not run-depend on it (conda-forge feedstock ignores its run export)
           CONDA_SUBDIR=osx-arm64 "$MM" create -y -p "$RUNNER_TEMP/env-arm64" -c conda-forge \
-            "libopencolorio=$OCIO_VERSION" "libopenimageio=$OIIO_VERSION"
+            "libopencolorio=$OCIO_VERSION" "libopenimageio=$OIIO_VERSION" fmt
           CONDA_SUBDIR=osx-64 "$MM" create -y -p "$RUNNER_TEMP/env-x86_64" -c conda-forge \
-            "libopencolorio=$OCIO_VERSION" "libopenimageio=$OIIO_VERSION"
+            "libopencolorio=$OCIO_VERSION" "libopenimageio=$OIIO_VERSION" fmt
 
       - name: Build (debug + release, arm64 + x86_64)
         run: |
