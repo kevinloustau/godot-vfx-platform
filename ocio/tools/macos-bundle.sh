@@ -36,6 +36,10 @@ stage() { # <main-dylib> <dep-libdir> <out-dir>
 	mkdir -p "$out"
 	name=$(basename "$lib")
 	cp "$lib" "$out/$name"
+	# Give the library an arch-agnostic install name: the shipped file is the
+	# lipo-merged libgdocio.macos.<target>.universal.dylib.
+	universal_name=$(echo "$name" | sed -E 's/\.(arm64|x86_64)\.dylib$/.universal.dylib/')
+	install_name_tool -id "@rpath/$universal_name" "$out/$name"
 	rewrite_tree "$libdir" "$out" "$name"
 	echo "staged $name in $out"
 }

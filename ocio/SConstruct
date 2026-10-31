@@ -88,7 +88,10 @@ if env["platform"] == "macos":
 	# names to @rpath/<name>. @loader_path resolves them next to the library
 	# (editor), @executable_path/../Frameworks is where Godot's macOS export
 	# places them. headerpad leaves room for install_name_tool edits.
+	# The install name (LC_ID_DYLIB) is the final universal name, so the
+	# merged binary describes itself correctly.
 	env.Append(LINKFLAGS=["-Wl,-headerpad_max_install_names",
+			"-Wl,-install_name,@rpath/libgdocio.macos.%s.universal.dylib" % env["target"],
 			"-Wl,-rpath,@loader_path",
 			"-Wl,-rpath,@executable_path/../Frameworks"])
 
