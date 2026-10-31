@@ -33,8 +33,17 @@ refs_of() {
 	done
 }
 
-# All staged files except the main library (libgdocio.*).
-dep_names() { ls | grep -v '^libgdocio' | sort; }
+# All staged dylibs except the main library (libgdocio.*). Only .dylib
+# files: the output dir also holds the descriptor and the snippet.
+dep_names() {
+	local f
+	for f in *.dylib; do
+		case "$f" in
+		libgdocio*) continue ;;
+		esac
+		[ -e "$f" ] && printf '%s\n' "$f"
+	done | sort
+}
 
 stage() { # <main-dylib> <dep-libdir> <out-dir>
 	local lib=$1 libdir=$2 out=$3 name
