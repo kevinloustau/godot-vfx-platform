@@ -1,0 +1,10 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# Build outputs (binaries land in dist/ via scons install / CI artifacts)
+dist/
+build/
+*.o
+*.os
+.sconsign.dblite

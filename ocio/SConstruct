@@ -1,0 +1,112 @@
+#!/usr/bin/env python
+# GDExtension build: OpenColorIO + OpenImageIO for Godot 4.
+#
+# Usage (from this directory, godot-cpp submodule checked out at the repo
+# root next to this folder):
+#   scons target=template_debug          # godot-cpp is built on demand
+#   scons target=template_release
+#   scons arch=arm64                     # macOS arch (arm64 / x86_64; the
+#                                        # bundle script lipo-merges into
+#                                        # .universal.dylib)
+#   scons rpath=0                        # no -rpath to the brew libdir
+#                                        # (portable/bundled builds)
+#   scons install=0                      # skip copying into dist/ocio
+#
+# Dependencies (pkg-config): OpenColorIO >= 2.1, OpenImageIO >= 2.2.
+# Override with OCIO_CFLAGS/OCIO_LIBS and OIIO_CFLAGS/OIIO_LIBS env vars.
+
+import os
+import subprocess
+import sys
+
+env = Environment()
+
+godot_cpp = ARGUMENTS.get("godot_cpp", os.path.join("..", "godot-cpp"))
+if not os.path.isdir(godot_cpp):
+	print("godot-cpp not found at '%s' (git submodule update --init, or pass godot_cpp=...)" % godot_cpp)
+	Exit(1)
+# godot-cpp v10 (master) picks the engine API with api_version; older
+# godot-cpp releases (<= 4.5 branch) ignore it and build their own API.
+api_version = ARGUMENTS.get("api_version", "4.7")
+SConscript(godot_cpp + "/SConstruct", {"env": env, "api_version": api_version}, duplicate=False)
+
+env.Append(CPPPATH=["src/"])
+
+
+def try_pkg(args):
+	try:
+		return subprocess.check_output(args).decode().strip().split()
+	except (subprocess.CalledProcessError, OSError):
+		return None
+
+
+# godot-cpp compiles with -fno-exceptions; OpenColorIO API needs exceptions
+# (only our own sources are compiled after this line).
+env.Append(CCFLAGS=["-fexceptions"])
+
+# pkg-config is the default; OCIO_CFLAGS/OCIO_LIBS/OIIO_CFLAGS/OIIO_LIBS
+# env vars override it (Windows: point them at your vcpkg/OCIO build).
+env.Append(CCFLAGS=os.environ.get("OCIO_CFLAGS", "").split())
+env.Append(CCFLAGS=os.environ.get("OIIO_CFLAGS", "").split())
+env.Append(LINKFLAGS=os.environ.get("OCIO_LIBS", "").split())
+env.Append(LINKFLAGS=os.environ.get("OIIO_LIBS", "").split())
+use_pkg = not (os.environ.get("OCIO_CFLAGS") and os.environ.get("OCIO_LIBS")
+		and os.environ.get("OIIO_CFLAGS") and os.environ.get("OIIO_LIBS"))
+
+for name, lib in (("OpenColorIO", "OCIO"), ("OpenImageIO", "OIIO")):
+	if not use_pkg:
+		break
+	flags = try_pkg(["pkg-config", "--cflags", "--libs", name])
+	if flags is None:
+		print("pkg-config cannot find %s (needed by the OCIO extension)" % name)
+		Exit(1)
+	env.Append(CCFLAGS=flags, LINKFLAGS=flags)
+	libdir = try_pkg(["pkg-config", "--variable=libdir", name])
+	# no -Wl,-rpath on Windows; rpath=0 skips it for portable/bundled builds
+	if libdir and env["platform"] != "windows" and int(ARGUMENTS.get("rpath", "1")):
+		# runtime location of libOpenColorIO/libOpenImageIO for the loaded .so
+		env.Append(LINKFLAGS=["-Wl,-rpath," + libdir[0]])
+		# transitive deps (e.g. fmt) live in the shared prefix include dir
+		# (e.g. Homebrew), which the .pc file does not propagate
+		p = os.path.dirname(libdir[0])
+		for _ in range(6):  # Cellar/<formula>/<ver>/lib → shared prefix include
+			cand = os.path.join(p, "include")
+			if os.path.isdir(cand) and cand not in env["CPPPATH"]:
+				env.Append(CPPPATH=[cand])
+			p = os.path.dirname(p)
+if not use_pkg:
+	env.AppendUnique(CPPPATH=[p for p in os.environ.get("OCIO_CFLAGS", "").split()
+			+ os.environ.get("OIIO_CFLAGS", "").split() if p.startswith("-I")])
+
+
+env.Append(CCFLAGS=["-Wno-deprecated-declarations"])  # OCIO 2.2+ deprecates some 2.1 APIs we use
+
+if env["platform"] == "macos":
+	# Portable bundle: tools/macos-bundle.sh rewrites the dependency install
+	# names to @rpath/<name>. @loader_path resolves them next to the library
+	# (editor), @executable_path/../Frameworks is where Godot's macOS export
+	# places them. headerpad leaves room for install_name_tool edits.
+	env.Append(LINKFLAGS=["-Wl,-headerpad_max_install_names",
+			"-Wl,-rpath,@loader_path",
+			"-Wl,-rpath,@executable_path/../Frameworks"])
+
+sources = Glob("src/*.cpp")
+# Plain dylib on every platform. The macOS arch-tagged names are lipo-merged
+# into libgdocio.macos.<target>.universal.dylib by tools/macos-bundle.sh.
+suffix = ".{}.{}.{}{}".format(
+	env["platform"],
+	env["target"],
+	env["arch"],
+	env["SHLIBSUFFIX"])
+library = env.SharedLibrary("libgdocio{}".format(suffix), source=sources)
+Default(library)  # with install=0 this is still the default target
+
+# Install: binary + descriptor into dist/ocio/<platform>/ at the repo root.
+# This is a build/distribution repo (not a Godot project): copy the result
+# into <project>/addons/ocio/ to use it, as described in ocio/README.md.
+dist = os.path.join("..", "dist", "ocio")
+platform_dir = {"linux": "linux64", "windows": "win64", "macos": "macos"}.get(env["platform"])
+if platform_dir and int(ARGUMENTS.get("install", "1")):
+	installs = [env.Install(os.path.join(dist, platform_dir), library),
+			env.Install(dist, "ocio.gdextension")]
+	Default(installs)
