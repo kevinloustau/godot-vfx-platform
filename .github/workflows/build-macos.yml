@@ -96,10 +96,10 @@ jobs:
             lipo -archs "$lib"
           done
           # Every non-system reference must be @rpath (fully relocated).
-          # awk 'NF' drops the blank lines otool prints between files, and
-          # ':$' drops its "<file>:" headers.
-          bad=$(otool -L dist/ocio/macos/*.dylib | awk 'NF { print $1 }' \
-            | grep -v -e '^@rpath' -e '^/usr/lib' -e '/System/' -e ':$' || true)
+          # otool indents the actual references with a tab; its "<file>"
+          # headers and the blank lines between files are not references.
+          bad=$(otool -L dist/ocio/macos/*.dylib | awk '/^\t/ { print $1 }' \
+            | grep -v -e '^@rpath' -e '^/usr/lib' -e '/System/' || true)
           if [ -n "$bad" ]; then
             echo "unrelocated references:"; echo "$bad"; exit 1
           fi
@@ -118,8 +118,9 @@ jobs:
           PY
 
       - name: Upload artifact
+        if: always()  # keep the binaries downloadable even if verify fails
         uses: actions/upload-artifact@v4
         with:
           name: ocio-macos-universal
           path: dist/ocio/macos/
-          if-no-files-found: error
+          if-no-files-found: warn
