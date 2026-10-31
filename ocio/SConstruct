@@ -75,7 +75,7 @@ for name, lib in (("OpenColorIO", "OCIO"), ("OpenImageIO", "OIIO")):
 				env.Append(CPPPATH=[cand])
 			p = os.path.dirname(p)
 if not use_pkg:
-	env.AppendUnique(CPPPATH=[p for p in os.environ.get("OCIO_CFLAGS", "").split()
+	env.AppendUnique(CPPPATH=[p[2:] for p in os.environ.get("OCIO_CFLAGS", "").split()
 			+ os.environ.get("OIIO_CFLAGS", "").split() if p.startswith("-I")])
 
 

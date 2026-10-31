@@ -1,8 +1,14 @@
 name: build-macos
 
 # OCIO GDExtension for macOS — universal (arm64 + x86_64) binaries with the
-# Homebrew OpenColorIO/OpenImageIO dylibs bundled and rewritten to @rpath,
-# so the addon folder is portable (no Homebrew needed on the user machine).
+# OpenColorIO/OpenImageIO dylibs bundled and rewritten to @rpath, so the
+# addon folder is portable (nothing to install on the user machine).
+#
+# Dependencies come from conda-forge (micromamba) for BOTH arches: Homebrew
+# no longer installs/builds x86_64 macOS packages, while conda-forge ships
+# matching osx-arm64 and osx-64 builds of the same versions. The x86_64 env
+# is never executed — Apple clang cross-compiles with -arch x86_64 — so no
+# Rosetta is involved.
 #
 # Produces the dist/ocio/macos artifact:
 #   libgdocio.macos.template_{debug,release}.universal.dylib
@@ -25,34 +31,36 @@ jobs:
     name: OCIO universal (arm64 + x86_64)
     runs-on: macos-latest
     timeout-minutes: 90
+    env:
+      OCIO_VERSION: "2.6.0"
+      OIIO_VERSION: "3.2.1.2"
     steps:
       - name: Checkout (with godot-cpp submodule)
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Install native (arm64) build dependencies
-        run: brew install scons pkg-config opencolorio openimageio
+      - name: Install build tools (Homebrew, arm64)
+        run: brew install scons pkg-config
 
-      - name: Install Rosetta + x86_64 Homebrew
-        env:
-          NONINTERACTIVE: 1
+      - name: Install OpenColorIO/OpenImageIO from conda-forge (osx-arm64 + osx-64)
         run: |
-          softwareupdate --install-rosetta --agree-to-license
-          arch -x86_64 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-      - name: Install x86_64 build dependencies
-        run: arch -x86_64 /usr/local/bin/brew install pkg-config opencolorio openimageio
+          curl -Ls https://micro.mamba.pm/api/micromamba/osx-arm64/latest | tar -xj -C "$RUNNER_TEMP" bin/micromamba
+          MM="$RUNNER_TEMP/bin/micromamba"
+          export MAMBA_ROOT_PREFIX="$RUNNER_TEMP/mamba"
+          CONDA_SUBDIR=osx-arm64 "$MM" create -y -p "$RUNNER_TEMP/env-arm64" -c conda-forge \
+            "libopencolorio=$OCIO_VERSION" "libopenimageio=$OIIO_VERSION"
+          CONDA_SUBDIR=osx-64 "$MM" create -y -p "$RUNNER_TEMP/env-x86_64" -c conda-forge \
+            "libopencolorio=$OCIO_VERSION" "libopenimageio=$OIIO_VERSION"
 
       - name: Build (debug + release, arm64 + x86_64)
         run: |
           cd ocio
           for target in template_debug template_release; do
-            # arm64: native Homebrew (/opt/homebrew)
-            scons platform=macos arch=arm64 target=$target install=0 rpath=0
-            # x86_64: cross-compile with Apple clang, link against the Intel
-            # Homebrew (/usr/local) — its pkg-config must come first on PATH.
-            PATH="/usr/local/bin:$PATH" scons platform=macos arch=x86_64 target=$target install=0 rpath=0
+            PKG_CONFIG_PATH="$RUNNER_TEMP/env-arm64/lib/pkgconfig" \
+              scons platform=macos arch=arm64 target=$target install=0 rpath=0
+            PKG_CONFIG_PATH="$RUNNER_TEMP/env-x86_64/lib/pkgconfig" \
+              scons platform=macos arch=x86_64 target=$target install=0 rpath=0
           done
 
       - name: Stage per-arch bundles
@@ -60,9 +68,11 @@ jobs:
           for target in template_debug template_release; do
             ocio/tools/macos-bundle.sh stage \
               ocio/libgdocio.macos.$target.arm64.dylib \
+              "$RUNNER_TEMP/env-arm64/lib" \
               build/stage/arm64/$target
             ocio/tools/macos-bundle.sh stage \
               ocio/libgdocio.macos.$target.x86_64.dylib \
+              "$RUNNER_TEMP/env-x86_64/lib" \
               build/stage/x86_64/$target
           done
 
@@ -89,10 +99,14 @@ jobs:
           if [ -n "$bad" ]; then
             echo "unrelocated references:"; echo "$bad"; exit 1
           fi
-          # The release library must dlopen standalone: proves every
-          # dependency is bundled and correctly rewritten.
+          # Godot preloads the [dependencies] before the main library; mimic
+          # that, then dlopen the release build standalone.
           python3 - <<'PY'
-          import ctypes
+          import ctypes, glob
+          for f in sorted(glob.glob("dist/ocio/macos/*.dylib")):
+              if "libgdocio" in f:
+                  continue
+              ctypes.CDLL(f)
           ctypes.CDLL("dist/ocio/macos/libgdocio.macos.template_release.universal.dylib")
           print("dlopen OK")
           PY

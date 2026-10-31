@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # macOS bundling for the OCIO GDExtension.
 #
-#   stage <main-dylib> <out-dir>
-#       Copy the built library plus every Homebrew dependency into <out-dir>,
-#       rewriting all install names to "@rpath/<name>" (relocatable bundle).
-#       Run once per architecture: arm64 -> /opt/homebrew, x86_64 -> /usr/local
-#       (Intel Homebrew under Rosetta).
+#   stage <main-dylib> <dep-libdir> <out-dir>
+#       Copy the built library plus every dependency into <out-dir>, making
+#       the bundle relocatable: absolute install names are rewritten to
+#       "@rpath/<name>", already-@rpath names (conda-forge style) are
+#       resolved from <dep-libdir>. <dep-libdir> is the lib dir the library
+#       was linked against (Homebrew prefix/lib or conda env/lib).
+#       Run once per architecture.
 #
 #   merge <target> <arm64-dir> <x86_64-dir> <out-dir>
 #       lipo-merge the two staged trees into universal binaries in <out-dir>,
 #       ad-hoc codesign everything (required on arm64), and emit
 #       dependencies-snippet.txt plus a ready-to-use ocio.gdextension
-#       (this template + the macOS [dependencies] section).
+#       (the template + the macOS [dependencies] section).
 #
 # Usage: macos-bundle.sh <stage|merge> ...
 set -euo pipefail
@@ -21,45 +23,48 @@ gdextension_template="$script_dir/../ocio.gdextension"
 
 fail() { echo "macos-bundle: $*" >&2; exit 1; }
 
-is_system_lib() {
-	case "$1" in
-	/usr/lib/* | /System/Library/*) return 0 ;;
-	*) return 1 ;;
-	esac
-}
-
 # The LC_LOAD_DYLIB paths of a Mach-O file (one per line).
 refs_of() { otool -L "$1" | tail -n +2 | awk '{ print $1 }'; }
 
 # All staged files except the main library (libgdocio.*).
 dep_names() { ls | grep -v '^libgdocio' | sort; }
 
-stage() { # <main-dylib> <out-dir>
-	local lib=$1 out=$2 name
+stage() { # <main-dylib> <dep-libdir> <out-dir>
+	local lib=$1 libdir=$2 out=$3 name
 	[ -f "$lib" ] || fail "library not found: $lib"
+	[ -d "$libdir" ] || fail "dep libdir not found: $libdir"
 	mkdir -p "$out"
 	name=$(basename "$lib")
 	cp "$lib" "$out/$name"
-	rewrite_tree "$out" "$name"
+	rewrite_tree "$libdir" "$out" "$name"
 	echo "staged $name in $out"
 }
 
-# Depth-first: rewrite the references of <out>/<name> and stage anything new.
-rewrite_tree() { # <out-dir> <name>
-	local out=$1 name=$2 ref depname src
+# Depth-first: make the references of <out>/<name> relocatable and stage any
+# newly discovered dependency.
+rewrite_tree() { # <dep-libdir> <out-dir> <name>
+	local libdir=$1 out=$2 name=$3 ref depname src
 	for ref in $(refs_of "$out/$name"); do
+		src=
 		case "$ref" in
-		@*) continue ;; # already @rpath / @loader_path / ...
+		@rpath/*) # already relocatable (conda-forge) — resolve the file
+			depname=${ref#@rpath/}
+			src=$libdir/$depname
+			;;
+		@loader_path/* | @executable_path/*) continue ;;
+		/usr/lib/* | /System/Library/*) continue ;; # system libs stay as-is
+		*) # absolute install name (Homebrew style) — rewrite it
+			depname=$(basename "$ref")
+			src=$ref
+			install_name_tool -change "$ref" "@rpath/$depname" "$out/$name"
+			;;
 		esac
-		is_system_lib "$ref" && continue
-		depname=$(basename "$ref")
-		install_name_tool -change "$ref" "@rpath/$depname" "$out/$name"
 		if [ ! -f "$out/$depname" ]; then
-			[ -f "$ref" ] || fail "dependency missing: $ref"
-			cp -L "$ref" "$out/$depname"
+			[ -f "$src" ] || fail "dependency missing: $src (needed by $name)"
+			cp -L "$src" "$out/$depname"
 			install_name_tool -id "@rpath/$depname" "$out/$depname"
-			install_name_tool -add_rpath "@loader_path" "$out/$depname"
-			rewrite_tree "$out" "$depname"
+			install_name_tool -add_rpath "@loader_path" "$out/$depname" 2>/dev/null || true
+			rewrite_tree "$libdir" "$out" "$depname"
 		fi
 	done
 }
@@ -73,13 +78,13 @@ merge() { # <target> <arm64-dir> <x86_64-dir> <out-dir>
 	mkdir -p "$out"
 
 	# The dependency sets must match across arches, otherwise the lipo pairing
-	# below is wrong (e.g. Homebrew poured different formula versions).
+	# below is wrong (e.g. different package versions in the two prefixes).
 	local arm_deps x86_deps dep
 	arm_deps=$(cd "$armdir" && dep_names)
 	x86_deps=$(cd "$x86dir" && dep_names)
 	if [ "$arm_deps" != "$x86_deps" ]; then
 		fail "staged dependency sets differ between arches (pin the same
-Homebrew formula versions in both prefixes):
+package versions in both dependency prefixes):
 arm64:
 $arm_deps
 x86_64:
@@ -141,8 +146,8 @@ write_dist() { # <out-dir> — dependencies snippet + ready-to-use .gdextension
 
 case "${1:-}" in
 stage)
-	[ $# -eq 3 ] || fail "usage: $0 stage <main-dylib> <out-dir>"
-	stage "$2" "$3"
+	[ $# -eq 4 ] || fail "usage: $0 stage <main-dylib> <dep-libdir> <out-dir>"
+	stage "$2" "$3" "$4"
 	;;
 merge)
 	[ $# -eq 5 ] || fail "usage: $0 merge <target> <arm64-dir> <x86_64-dir> <out-dir>"

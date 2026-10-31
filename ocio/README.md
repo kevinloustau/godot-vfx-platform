@@ -29,7 +29,6 @@ ocio/                       C++ source + build files (this directory)
   SConstruct                  scons build; installs into ../dist/ocio/<platform>/
   tools/macos-bundle.sh        portable macOS bundling (stage/merge, @rpath rewrite,
                               universal lipo, codesign, deps snippet)
-godot-cpp/                  submodule — master (v10), api_version=4.7 → Godot 4.7
 dist/ocio/                  build output (gitignored; CI uploads it as an artifact)
   macos/                      universal dylibs + bundled OCIO/OIIO dylibs +
                               ready-to-use ocio.gdextension + dependencies-snippet.txt
@@ -70,27 +69,40 @@ binary without copying into `../dist`), `use_static_cpp=no`.
 CI (`.github/workflows/build-macos.yml`) does the full pipeline; locally:
 
 ```sh
-brew install scons pkg-config opencolorio openimageio        # arm64 (/opt/homebrew)
+brew install scons pkg-config                       # build tools
+# matching OpenColorIO/OpenImageIO for both arches — conda-forge
+# (Homebrew no longer builds x86_64 macOS packages)
+CONDA_SUBDIR=osx-arm64 micromamba create -y -p ./env-arm64 \
+  -c conda-forge libopencolorio=2.6.0 libopenimageio=3.2.1.2
+CONDA_SUBDIR=osx-64    micromamba create -y -p ./env-x86_64 \
+  -c conda-forge libopencolorio=2.6.0 libopenimageio=3.2.1.2
 cd ocio
 for target in template_debug template_release; do
-  scons platform=macos arch=arm64   target=$target install=0 rpath=0
-  PATH="/usr/local/bin:$PATH" scons platform=macos arch=x86_64 target=$target install=0 rpath=0
-  tools/macos-bundle.sh stage libgdocio.macos.$target.arm64.dylib   ../build/stage/arm64/$target
-  PATH="/usr/local/bin:$PATH" tools/macos-bundle.sh stage libgdocio.macos.$target.x86_64.dylib ../build/stage/x86_64/$target
-  tools/macos-bundle.sh merge $target ../build/stage/arm64/$target ../build/stage/x86_64/$target ../dist/ocio/macos
+  PKG_CONFIG_PATH=../env-arm64/lib/pkgconfig \
+    scons platform=macos arch=arm64 target=$target install=0 rpath=0
+  PKG_CONFIG_PATH=../env-x86_64/lib/pkgconfig \
+    scons platform=macos arch=x86_64 target=$target install=0 rpath=0
+  tools/macos-bundle.sh stage libgdocio.macos.$target.arm64.dylib \
+    ../env-arm64/lib ../build/stage/arm64/$target
+  tools/macos-bundle.sh stage libgdocio.macos.$target.x86_64.dylib \
+    ../env-x86_64/lib ../build/stage/x86_64/$target
+  tools/macos-bundle.sh merge $target \
+    ../build/stage/arm64/$target ../build/stage/x86_64/$target ../dist/ocio/macos
 done
 ```
 
-x86_64 needs the Intel Homebrew under Rosetta (`/usr/local`, see the
-workflow) for the dependency slices; Apple clang cross-compiles the code.
+Apple clang cross-compiles the x86_64 slices with `-arch x86_64`; the
+osx-64 conda packages are only linked against, never executed — no Rosetta
+needed. The two envs must hold the **same package versions** (`merge` fails
+if the staged dependency sets differ across arches).
 
-The bundling makes the addon **portable**: every Homebrew dependency is
-copied next to the library as a universal dylib, all install names are
-rewritten to `@rpath/<name>`, and the library carries
-`@loader_path` + `@executable_path/../Frameworks` rpaths — so it runs in
-the editor (deps preloaded from the addon folder via `[dependencies]`)
-and in macOS exports (deps copied to `Contents/Frameworks` by Godot).
-`merge` also ad-hoc codesigns everything (required on arm64) and writes
+The bundling makes the addon **portable**: every dependency is copied next
+to the library as a universal dylib, absolute install names are rewritten
+to `@rpath/<name>`, and the library carries `@loader_path` +
+`@executable_path/../Frameworks` rpaths — so it runs in the editor (deps
+preloaded from the addon folder via `[dependencies]`) and in macOS exports
+(deps copied to `Contents/Frameworks` by Godot). `merge` also ad-hoc
+codesigns everything (required on arm64) and writes
 `dist/ocio/macos/ocio.gdextension` (template + generated macOS
 `[dependencies]` section) plus `dependencies-snippet.txt`.
 
@@ -98,23 +110,37 @@ and in macOS exports (deps copied to `Contents/Frameworks` by Godot).
 
 `build-macos.yml` (arm64 runner) per push/PR to `main`:
 
-- Installs arm64 deps with native Homebrew, x86_64 deps with Intel
-  Homebrew under Rosetta, builds debug+release for both arches, stages,
-  lipo-merges, codesigns, verifies (`lipo -archs`, no unrelocated
-  `otool -L` refs, standalone `dlopen` smoke test) and uploads
+- Installs OpenColorIO/OpenImageIO from conda-forge (micromamba) for both
+  `osx-arm64` and `osx-64` (pinned, matching versions), builds debug+
+  release for both arches, stages, lipo-merges, codesigns, verifies
+  (`lipo -archs`, no unrelocated `otool -L` refs, `dlopen` smoke test with
+  the dependencies preloaded like the editor does) and uploads
   `dist/ocio/macos/` as the `ocio-macos-universal` artifact.
-- Homebrew formula versions can drift between the two prefixes — `merge`
-  fails if the staged dependency sets differ across arches.
+- Homebrew is only used for the build tools (`scons`, `pkg-config`); it no
+  longer installs/builds x86_64 macOS packages, which is why the dependency
+  slices come from conda-forge instead.
 - Linux: `apt-get install scons build-essential pkg-config
   libopencolorio-dev libopenimageio-dev` + the two scons lines with
   `install=0`. Ubuntu 24.04 ships OCIO 2.3 / OIIO 2.5, so do not expect
   bit-identical transforms vs the 2.6-built binaries — pin/bundle if
   that matters.
 - Portable Linux export: the checked-in `.so` keeps a `RUNPATH` to the
-  build machine's brew Cellar. For distribution, build OCIO/OIIO with
+  build machine's dependency dir. For distribution, build OCIO/OIIO with
   `-DBUILD_SHARED_LIBS=OFF` and link the static archives, or bundle the
   shared libs via `[dependencies]` in `ocio.gdextension` like the macOS
   bundle. Check with `ldd libgdocio*.so | grep -E 'OpenColorIO|OpenImageIO'`.
+godot-cpp/                  submodule — master (v10), api_version=4.7 → Godot 4.7
+dist/ocio/                  build output (gitignored; CI uploads it as an artifact)
+  macos/                      universal dylibs + bundled OCIO/OIIO dylibs +
+                              ready-to-use ocio.gdextension + dependencies-snippet.txt
+  linux64/, win64/            built binaries
+.github/workflows/build-macos.yml   macOS universal CI build
+```
+
+To consume, copy the CI artifact (or your local `dist/ocio/<platform>/`)
+into the target Godot project as `addons/ocio/<platform>/` and
+`addons/ocio/ocio.gdextension` (paths in the descriptor are
+`res://addons/ocio/...`).
 
 ## Config resolution
 
@@ -161,6 +187,6 @@ uniforms are keyed by their **sampler** names as declared in the shader.
 ## Known issues
 
 - Linux `.so` binaries are not relocatable (see CI notes above).
-- The bundled macOS dylibs require whatever macOS the Homebrew bottles
+- The bundled macOS dylibs require whatever macOS the conda-forge packages
   were built for (no explicit deployment target is pinned); rebuild older
   targets locally if you need to support older macOS versions.
