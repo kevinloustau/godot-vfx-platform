@@ -23,8 +23,15 @@ gdextension_template="$script_dir/../ocio.gdextension"
 
 fail() { echo "macos-bundle: $*" >&2; exit 1; }
 
-# The LC_LOAD_DYLIB paths of a Mach-O file (one per line).
-refs_of() { otool -L "$1" | tail -n +2 | awk '{ print $1 }'; }
+# The LC_LOAD_DYLIB paths of a Mach-O file (one per line), excluding the
+# file's own install name (LC_ID_DYLIB), which otool -L prints first.
+refs_of() {
+	local file=$1 ids ref
+	ids=$(otool -D "$file" 2>/dev/null | tail -n +2 | tr -d '[:space:]')
+	otool -L "$file" | awk '/^\t/ { print $1 }' | while read -r ref; do
+		printf '%s\n' "$ids" | grep -Fqx "$ref" || printf '%s\n' "$ref"
+	done
+}
 
 # All staged files except the main library (libgdocio.*).
 dep_names() { ls | grep -v '^libgdocio' | sort; }
