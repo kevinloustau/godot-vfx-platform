@@ -8,3 +8,5 @@ build/
 *.o
 *.os
 .sconsign.dblite
+# extension build outputs land in dist/ (scons install) or are bundled by CI
+ocio/libgdocio.*
