@@ -100,8 +100,12 @@ $x86_deps"
 		lipo -create -output "$out/$dep" "$armdir/$dep" "$x86dir/$dep"
 	done
 
-	# Ad-hoc codesign everything (mandatory on arm64 after modifying binaries).
+	# Strip local symbols (smaller bundle) then ad-hoc codesign everything
+	# (mandatory on arm64 after modifying binaries; strip must come first).
 	local f
+	for f in "$out"/*.dylib; do
+		strip -x "$f" 2>/dev/null || true
+	done
 	for f in "$out"/*.dylib; do
 		codesign --force --sign - "$f"
 	done

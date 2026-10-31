@@ -96,11 +96,15 @@ jobs:
             lipo -archs "$lib"
           done
           # Every non-system reference must be @rpath (fully relocated).
-          bad=$(otool -L dist/ocio/macos/*.dylib | awk '{ print $1 }' \
-            | grep -v -e '^@rpath' -e '^/usr/lib' -e '/System/' -e ':' || true)
+          # awk 'NF' drops the blank lines otool prints between files, and
+          # ':$' drops its "<file>:" headers.
+          bad=$(otool -L dist/ocio/macos/*.dylib | awk 'NF { print $1 }' \
+            | grep -v -e '^@rpath' -e '^/usr/lib' -e '/System/' -e ':$' || true)
           if [ -n "$bad" ]; then
             echo "unrelocated references:"; echo "$bad"; exit 1
           fi
+          echo "all $(ls dist/ocio/macos/*.dylib | wc -l | tr -d ' ') dylibs are universal with @rpath references"
+          du -sh dist/ocio/macos
           # Godot preloads the [dependencies] before the main library; mimic
           # that, then dlopen the release build standalone.
           python3 - <<'PY'
