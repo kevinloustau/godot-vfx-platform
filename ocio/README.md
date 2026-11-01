@@ -30,7 +30,7 @@ ocio/                       C++ source + build files (this directory)
   tools/macos-bundle.sh        portable macOS bundling (stage/merge, @rpath rewrite,
                               universal lipo, codesign, deps snippet)
   tools/linux-bundle.sh        portable Linux bundling (full closure, RUNPATH=$ORIGIN)
-  tools/windows-bundle.sh      portable Windows bundling (PE import closure)
+  tools/windows-bundle.py      portable Windows bundling (PE import closure)
   tools/compose-gdextension.sh multi-platform descriptor from per-platform snippets
 dist/ocio/                  build output (gitignored; CI uploads it as an artifact)
   macos/                      universal dylibs + bundled OCIO/OIIO dylibs +
@@ -138,10 +138,12 @@ codesigns everything (required on arm64) and writes
 
 ## Build (Windows)
 
-CI builds it (`.github/workflows/build-windows.yml`): MSYS2 MINGW64 with
-`mingw-w64-x86_64-opencolorio` / `-openimageio`, `scons platform=windows
-use_mingw=yes`, then `tools/windows-bundle.sh stage <dll> <out-dir>
-/mingw64/bin` copies every imported DLL (system DLLs excluded).
+CI builds it (`.github/workflows/build-windows.yml`): MSVC + conda-forge
+win-64 (`libopencolorio` / `libopenimageio`, same versions as the other
+platforms), `scons platform=windows` with `OCIO_CFLAGS`/`OCIO_LIBS` env
+vars pointing at the conda prefix (no pkg-config on Windows), then
+`tools/windows-bundle.py stage <dll> <out-dir> <conda>/Library/bin` copies
+every imported DLL (system DLLs excluded, `pip install pefile`).
 Windows has no rpath, so the bundle must sit next to the exported
 executable — which is what the generated `windows.x86_64` `[dependencies]`
 section does.
@@ -150,7 +152,7 @@ section does.
 
 Three workflows run per push/PR to `main`.
 
-`build-windows.yml` (windows-latest): MSYS2 MINGW64, builds debug+release,
+`build-windows.yml` (windows-latest): MSVC + conda-forge win-64, builds debug+release,
 bundles imported DLLs, verifies every import is either bundled or a
 Windows system DLL, then loads the extension with a Windows python whose
 DLL search path is only the addon folder. Uploads `ocio-win64`.

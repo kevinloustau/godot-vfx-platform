@@ -3,14 +3,17 @@ name: build-windows
 # OCIO GDExtension for Windows (x86_64) — the extension plus every DLL it
 # imports, so the addon works on a machine with nothing installed.
 # Windows has no rpath: the loader only searches the executable's own
-# directory (and PATH), hence the bundled DLL set listed in [dependencies].
+# directory (and PATH), hence the bundled DLL set in [dependencies].
 #
-# Toolchain: MSYS2 MINGW64 (gcc) with mingw-w64 packages for OpenColorIO
-# 2.6.0 / OpenImageIO; godot-cpp builds with use_mingw=yes.
+# Toolchain: MSVC (windows-latest) + conda-forge win-64 for OpenColorIO
+# 2.6.0 / OpenImageIO 3.2.1.2 — the same versions as the Linux and macOS
+# builds, so transforms agree across platforms. MSYS2's MinGW packages are
+# not used: their opencolorio/openimageio binaries are not reliably
+# available on the runner mirrors and would pull a different version set.
 #
 # Produces the dist/ocio/win64 artifact:
 #   libgdocio.windows.template_{debug,release}.x86_64.dll
-#   libOpenColorIO_2_6.dll, libOpenImageIO.dll, ... (bundled imports)
+#   libOpenColorIO*.dll, libOpenImageIO*.dll, ... (bundled imports)
 #   ocio.gdextension (windows section filled in) + dependencies-snippet.txt
 
 on:
@@ -24,6 +27,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  OCIO_VERSION: "2.6.0"
+  OIIO_VERSION: "3.2.1.2"
   BUNDLE: dist/ocio/win64
 
 jobs:
@@ -33,84 +38,86 @@ jobs:
     timeout-minutes: 90
     defaults:
       run:
-        shell: msys2 {0}
+        shell: bash
     steps:
       - name: Checkout (with godot-cpp submodule)
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Set up MSYS2 (MINGW64) with OpenColorIO/OpenImageIO
-        uses: msys2/setup-msys2@v2
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          msystem: MINGW64
-          update: false
-          install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-opencolorio
-            mingw-w64-x86_64-openimageio
-            mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-scons
-            mingw-w64-x86_64-python
+          arch: x64
 
-      - name: Show dependency versions
+      - name: Install OpenColorIO/OpenImageIO from conda-forge (win-64)
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: ocio
+          create-args: >-
+            libopencolorio=${{ env.OCIO_VERSION }}
+            libopenimageio=${{ env.OIIO_VERSION }}
+            fmt
+
+      - name: Install build tools
         run: |
-          pkg-config --modversion OpenColorIO OpenImageIO
-          g++ --version | head -1
-          scons --version | head -2
+          python -m pip install --disable-pip-version-check scons pefile
 
       - name: Build (debug + release)
         run: |
           cd ocio
+          lib="$CONDA_PREFIX/Library/lib"
+          inc="$CONDA_PREFIX/Library/include"
+          # No pkg-config on Windows: point the build at the conda prefix.
+          export OCIO_CFLAGS="-I$inc" OIIO_CFLAGS="-I$inc"
+          export OCIO_LIBS="-L$lib -lOpenColorIO" OIIO_LIBS="-L$lib -lOpenImageIO -lOpenImageIO_Util"
           for target in template_debug template_release; do
             scons platform=windows arch=x86_64 target=$target \
-              use_mingw=yes use_static_cpp=no install=0
+              use_static_cpp=no install=0
           done
+          ls -la *.dll
 
       - name: Bundle imported DLLs
         run: |
           cd ocio
-          out=$(cygpath -u "$GITHUB_WORKSPACE")/$BUNDLE
           for target in template_debug template_release; do
-            tools/windows-bundle.sh stage \
-              "libgdocio.windows.$target.x86_64.dll" "$out" /mingw64/bin
+            python tools/windows-bundle.py stage \
+              "libgdocio.windows.$target.x86_64.dll" \
+              "$GITHUB_WORKSPACE/$BUNDLE" "$CONDA_PREFIX/Library/bin"
           done
 
       - name: Verify every import is bundled
         run: |
           set -euo pipefail
           cd ocio
-          out=$(cygpath -u "$GITHUB_WORKSPACE")/$BUNDLE
           for target in template_debug template_release; do
-            tools/windows-bundle.sh verify \
-              "libgdocio.windows.$target.x86_64.dll" "$out"
+            python tools/windows-bundle.py verify \
+              "libgdocio.windows.$target.x86_64.dll" "$GITHUB_WORKSPACE/$BUNDLE"
           done
-          ls "$out" | wc -l
-          du -sh "$out"
+          ls "$GITHUB_WORKSPACE/$BUNDLE" | wc -l
+          du -sh "$GITHUB_WORKSPACE/$BUNDLE"
 
       - name: Compose descriptor (windows section)
         run: |
           cd ocio
-          out=$(cygpath -u "$GITHUB_WORKSPACE")/$BUNDLE
-          tools/compose-gdextension.sh "$out/ocio.gdextension" "windows:$out"
+          tools/compose-gdextension.sh \
+            "$GITHUB_WORKSPACE/$BUNDLE/ocio.gdextension" \
+            "windows:$GITHUB_WORKSPACE/$BUNDLE"
 
-      # Windows python (not the MSYS2 one): its own directory is searched
-      # first, so an MSYS2 python would silently find /mingw64/bin/*.dll and
-      # the test would prove nothing.
-      - name: Load test with the addon folder as the only search path
-        shell: pwsh
+      # The addon folder must be the only search path: a PATH containing the
+      # conda env would hide any DLL that was not bundled.
+      - name: Load test with only the addon folder on the DLL search path
         run: |
-          $bundle = Join-Path "$env:GITHUB_WORKSPACE" "$env:BUNDLE"
-          $py = (Get-Command python).Source
-          $env:PATH = "C:\Windows\System32;C:\Windows"
-          & $py -c @"
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/$BUNDLE"
+          PATH="/c/Windows/System32:/c/Windows" \
+            "$(cygpath -u "$(python -c 'import sys; print(sys.executable)')")" - <<'PY'
           import ctypes, os
-          d = r'$bundle'
+          d = os.getcwd()
           os.add_dll_directory(d)
-          ctypes.WinDLL(os.path.join(d, 'libgdocio.windows.template_release.x86_64.dll'))
-          print('LoadLibrary OK')
-          "@
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctypes.WinDLL(os.path.join(d, "libgdocio.windows.template_release.x86_64.dll"))
+          print("LoadLibrary OK")
+          PY
 
       - name: Upload artifact
         if: always()
