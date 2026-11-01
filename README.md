@@ -6,7 +6,7 @@ folder and builds through GitHub Actions into portable artifacts.
 
 | Extension | What it provides | CI |
 | --- | --- | --- |
-| [`ocio/`](ocio/) | `OcioTransform`: exact OCIO color transforms, OCIO-generated GPU shaders, float EXR I/O | `.github/workflows/build-macos.yml` (universal) |
+| [`ocio/`](ocio/) | `OcioTransform`: exact OCIO color transforms, OCIO-generated GPU shaders, float EXR I/O | `build-linux.yml` (portable), `build-macos.yml` (universal) |
 
 Targets the **Godot 4.7** API (`godot-cpp` master submodule, `api_version=4.7`).
 
@@ -18,18 +18,24 @@ cd godot-vfx-platform/ocio
 scons target=template_release     # platform-specific steps in ocio/README.md
 ```
 
-Binaries + a ready-to-use `ocio.gdextension` install into `dist/ocio/`;
-the macOS workflow produces a portable universal bundle (bundled
-Homebrew dylibs rewritten to `@rpath`, ad-hoc signed) as the
-`ocio-macos-universal` artifact.
+Binaries + a ready-to-use `ocio.gdextension` install into `dist/ocio/`.
+Both CI artifacts are **self-contained** — the extension ships its whole
+dependency closure, so a user needs nothing installed:
+
+- `ocio-linux64`: extension + 57 `.so` files, all `RUNPATH=$ORIGIN`
+- `ocio-macos-universal`: universal (arm64+x86_64) dylibs rewritten to
+  `@rpath`, ad-hoc signed, deps exported to `Contents/Frameworks`
 
 ## Using an artifact in a Godot project
 
-Copy the platform folder and descriptor into the target project:
+Copy each platform folder into the target project, then compose the
+descriptor from the per-platform dependency snippets:
 
 ```
-<project>/addons/ocio/ocio.gdextension          # from dist/ocio (macOS: the generated one)
-<project>/addons/ocio/macos/                   # artifact contents (or linux64/, win64/)
+<project>/addons/ocio/macos/     # artifact contents
+<project>/addons/ocio/linux64/   # artifact contents
+ocio/tools/compose-gdextension.sh <project>/addons/ocio/ocio.gdextension \
+  macos:dist/ocio/macos linux:dist/ocio/linux64
 ```
 
 See [`ocio/README.md`](ocio/README.md) for the full build, bundling and

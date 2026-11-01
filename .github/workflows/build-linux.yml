@@ -1,0 +1,101 @@
+name: build-linux
+
+# OCIO GDExtension for Linux (x86_64) — the extension plus its full runtime
+# closure of shared libraries, every one with RUNPATH=$ORIGIN, so the addon
+# works on a machine that has none of the build dependencies installed.
+#
+# Dependencies come from conda-forge (micromamba, linux-64), the same
+# versions as the macOS build: OCIO 2.6.0 / OIIO 3.2.1.2.
+#
+# Produces the dist/ocio/linux64 artifact:
+#   libgdocio.linux.template_{debug,release}.x86_64.so
+#   libOpenColorIO.so.2.6, libOpenImageIO.so.3.2, ... (57 bundled libs)
+#   ocio.gdextension (ready to use) + dependencies-snippet.txt
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ocio-linux:
+    name: OCIO Linux x86_64 (portable bundle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      OCIO_VERSION: "2.6.0"
+      OIIO_VERSION: "3.2.1.2"
+    steps:
+      - name: Checkout (with godot-cpp submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq scons pkg-config patchelf build-essential
+
+      - name: Install OpenColorIO/OpenImageIO from conda-forge
+        run: |
+          curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C "$RUNNER_TEMP" bin/micromamba
+          MM="$RUNNER_TEMP/bin/micromamba"
+          export MAMBA_ROOT_PREFIX="$RUNNER_TEMP/mamba"
+          # fmt: OIIO headers include <fmt/format.h>; libopenimageio does not
+          # run-depend on it (conda-forge feedstock ignores its run export).
+          "$MM" create -y -p "$RUNNER_TEMP/env" -c conda-forge \
+            "libopencolorio=$OCIO_VERSION" "libopenimageio=$OIIO_VERSION" fmt
+
+      - name: Build (debug + release)
+        run: |
+          cd ocio
+          for target in template_debug template_release; do
+            # rpath=0: no build-machine paths in RUNPATH (the bundler sets
+            # RUNPATH=$ORIGIN); use_static_cpp=no: don't static-link libstdc++.
+            PKG_CONFIG_PATH="$RUNNER_TEMP/env/lib/pkgconfig" \
+              scons platform=linux arch=x86_64 target=$target install=0 rpath=0 use_static_cpp=no
+          done
+
+      - name: Bundle dependencies (RUNPATH=$ORIGIN)
+        run: |
+          cd ocio
+          for target in template_debug template_release; do
+            tools/linux-bundle.sh stage "libgdocio.linux.$target.x86_64.so" \
+              "$GITHUB_WORKSPACE/dist/ocio/linux64" "$RUNNER_TEMP/env/lib"
+          done
+
+      - name: Verify portability with the build env removed
+        run: |
+          set -euo pipefail
+          cd ocio
+          # Hide the conda env: anything still pointing there must fail now.
+          mv "$RUNNER_TEMP/env" "$RUNNER_TEMP/env-hidden"
+          for target in template_debug template_release; do
+            tools/linux-bundle.sh verify "libgdocio.linux.$target.x86_64.so" \
+              "$GITHUB_WORKSPACE/dist/ocio/linux64"
+          done
+          echo "--- dlopen test (dependency env is gone):"
+          python3 - <<'PY'
+          import ctypes, glob
+          for f in sorted(glob.glob("dist/ocio/linux64/*.so*")):
+              if "libgdocio" in f:
+                  continue
+              ctypes.CDLL(f)
+          ctypes.CDLL("dist/ocio/linux64/libgdocio.linux.template_release.x86_64.so")
+          print("dlopen OK")
+          PY
+          du -sh dist/ocio/linux64
+          ls dist/ocio/linux64 | wc -l
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocio-linux64
+          path: dist/ocio/linux64/
+          if-no-files-found: warn

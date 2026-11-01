@@ -25,44 +25,72 @@ and float EXR I/O — replacing any baked-LUT approximation.
 ```
 ocio/                       C++ source + build files (this directory)
   src/                        ocio_transform.cpp/h, exr_io.cpp/h, register_types.cpp
-  ocio.gdextension            descriptor template (macOS deps injected by the build)
+  ocio.gdextension            descriptor template ([dependencies] filled by the build)
   SConstruct                  scons build; installs into ../dist/ocio/<platform>/
   tools/macos-bundle.sh        portable macOS bundling (stage/merge, @rpath rewrite,
                               universal lipo, codesign, deps snippet)
+  tools/linux-bundle.sh        portable Linux bundling (full closure, RUNPATH=$ORIGIN)
+  tools/compose-gdextension.sh multi-platform descriptor from per-platform snippets
 dist/ocio/                  build output (gitignored; CI uploads it as an artifact)
   macos/                      universal dylibs + bundled OCIO/OIIO dylibs +
                               ready-to-use ocio.gdextension + dependencies-snippet.txt
-  linux64/, win64/            built binaries
+  linux64/                    extension + full closure of .so files (RUNPATH=$ORIGIN)
+  win64/                      cross-built DLLs
 .github/workflows/build-macos.yml   macOS universal CI build
+.github/workflows/build-linux.yml   Linux portable bundle CI build
 ```
 
 To consume, copy the CI artifact (or your local `dist/ocio/<platform>/`)
-into the target Godot project as `addons/ocio/<platform>/` and
-`addons/ocio/ocio.gdextension` (paths in the descriptor are
-`res://addons/ocio/...`).
+into the target Godot project as `addons/ocio/<platform>/`. The descriptor
+must list every platform you ship, so compose it from the per-platform
+snippets:
+
+```sh
+ocio/tools/compose-gdextension.sh <project>/addons/ocio/ocio.gdextension \
+  macos:dist/ocio/macos linux:dist/ocio/linux64
+```
+
+(the `[libraries]` entries and the Windows DLL list already live in the
+template; `compose` only fills in the macOS/Linux `[dependencies]`
+sections. Paths in the descriptor are `res://addons/ocio/...`.)
 
 ## Build (Linux, native)
 
-Requirements: C++17 toolchain, `scons`, `pkg-config`,
-`OpenColorIO >= 2.3` (tested 2.6.0) and `OpenImageIO >= 2.3` (tested 3.2.1;
-Ubuntu: `sudo apt install scons build-essential pkg-config libopencolorio-dev
-libopenimageio-dev`; linuxbrew: `brew install scons opencolorio openimageio`
-and build with `PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig`).
+Requirements: C++17 toolchain, `scons`, `pkg-config`, `patchelf`, and
+`OpenColorIO >= 2.3` (tested 2.6.0) / `OpenImageIO >= 2.3` (tested 3.2.1).
+Ubuntu: `sudo apt install scons build-essential pkg-config patchelf
+libopencolorio-dev libopenimageio-dev`; linuxbrew: `brew install scons
+patchelf opencolorio openimageio` + `PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig`.
 
 ```sh
 git submodule update --init
 cd ocio
-scons target=template_debug        # installs into ../dist/ocio
-scons target=template_release
+scons target=template_debug   rpath=0    # rpath=0: no build paths in RUNPATH
+scons target=template_release rpath=0
+tools/linux-bundle.sh stage libgdocio.linux.template_release.x86_64.so \
+  ../dist/ocio/linux64 "$(brew --prefix)/lib"
+tools/linux-bundle.sh verify libgdocio.linux.template_release.x86_64.so \
+  ../dist/ocio/linux64
 ```
+
+`linux-bundle.sh` copies the extension's **full transitive closure** of
+shared libraries next to it and sets `RUNPATH=$ORIGIN` on every file, so
+the folder is portable: it runs on a machine with none of the build
+dependencies installed. System libraries (glibc, libstdc++, libgomp, GL
+drivers) are never bundled. `verify` fails if any non-system dependency
+resolves outside the bundle, and prints the number of files.
+
+Without the bundling step the `.so` keeps absolute build-machine paths
+(`/home/linuxbrew/Cellar/opencolorio/2.6.0/lib`) and only loads on the
+machine that built it — `stage` is what makes an addon distributable.
 
 godot-cpp is built on demand from the submodule; its master SConstruct
 generates bindings for the engine API picked by `api_version` (default
 `4.7`, the API this project targets; supported values 4.3–4.8).
 
-Useful arguments: `arch=arm64|x86_64`, `rpath=0` (skip the `-Wl,-rpath`
-to the dependency libdir — CI/portable builds), `install=0` (build the
-binary without copying into `../dist`), `use_static_cpp=no`.
+Useful arguments: `arch=arm64|x86_64`, `rpath=0` (no `-Wl,-rpath` to the
+dependency libdir), `install=0` (build without copying into `../dist`),
+`use_static_cpp=no`.
 
 ## Build (macOS, universal)
 
@@ -108,7 +136,15 @@ codesigns everything (required on arm64) and writes
 
 ## CI notes (GitHub Actions)
 
-`build-macos.yml` (arm64 runner) per push/PR to `main`:
+Two workflows run per push/PR to `main`.
+
+`build-linux.yml` (ubuntu-latest): installs OCIO/OIIO from conda-forge
+(linux-64, same versions as macOS), builds debug+release with `rpath=0`,
+bundles with `linux-bundle.sh`, then **moves the conda env away** and
+re-verifies + `dlopen`s the bundle, proving nothing points at build-time
+paths. Uploads `dist/ocio/linux64/` as the `ocio-linux64` artifact.
+
+`build-macos.yml` (arm64 runner):
 
 - Installs OpenColorIO/OpenImageIO from conda-forge (micromamba) for both
   `osx-arm64` and `osx-64` (pinned, matching versions), builds debug+
@@ -119,28 +155,9 @@ codesigns everything (required on arm64) and writes
 - Homebrew is only used for the build tools (`scons`, `pkg-config`); it no
   longer installs/builds x86_64 macOS packages, which is why the dependency
   slices come from conda-forge instead.
-- Linux: `apt-get install scons build-essential pkg-config
-  libopencolorio-dev libopenimageio-dev` + the two scons lines with
-  `install=0`. Ubuntu 24.04 ships OCIO 2.3 / OIIO 2.5, so do not expect
-  bit-identical transforms vs the 2.6-built binaries — pin/bundle if
-  that matters.
-- Portable Linux export: the checked-in `.so` keeps a `RUNPATH` to the
-  build machine's dependency dir. For distribution, build OCIO/OIIO with
-  `-DBUILD_SHARED_LIBS=OFF` and link the static archives, or bundle the
-  shared libs via `[dependencies]` in `ocio.gdextension` like the macOS
-  bundle. Check with `ldd libgdocio*.so | grep -E 'OpenColorIO|OpenImageIO'`.
-godot-cpp/                  submodule — master (v10), api_version=4.7 → Godot 4.7
-dist/ocio/                  build output (gitignored; CI uploads it as an artifact)
-  macos/                      universal dylibs + bundled OCIO/OIIO dylibs +
-                              ready-to-use ocio.gdextension + dependencies-snippet.txt
-  linux64/, win64/            built binaries
-.github/workflows/build-macos.yml   macOS universal CI build
-```
 
-To consume, copy the CI artifact (or your local `dist/ocio/<platform>/`)
-into the target Godot project as `addons/ocio/<platform>/` and
-`addons/ocio/ocio.gdextension` (paths in the descriptor are
-`res://addons/ocio/...`).
+Both platforms pin the same dependency versions, so CPU transforms agree
+across platforms (`OCIO_VERSION` / `OIIO_VERSION` in the workflow `env:`).
 
 ## Config resolution
 
@@ -186,7 +203,10 @@ uniforms are keyed by their **sampler** names as declared in the shader.
 
 ## Known issues
 
-- Linux `.so` binaries are not relocatable (see CI notes above).
+- The Linux bundle ships ~57 shared libraries (~107 MB) because conda-forge's
+  OIIO pulls ffmpeg/libheif/etc. Same for macOS (~306 MB, 92 dylibs).
+- Linux bundles glibc-compatible builds but not glibc itself: an exported
+  game still needs a glibc at least as new as the CI runner's.
 - The bundled macOS dylibs require whatever macOS the conda-forge packages
   were built for (no explicit deployment target is pinned); rebuild older
   targets locally if you need to support older macOS versions.

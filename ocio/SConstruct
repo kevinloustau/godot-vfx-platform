@@ -64,12 +64,14 @@ for name, lib in (("OpenColorIO", "OCIO"), ("OpenImageIO", "OIIO")):
 	env.Append(CCFLAGS=cflags)  # --cflags only: -l/-L are link flags
 	env.Append(LINKFLAGS=libs)
 	libdir = try_pkg(["pkg-config", "--variable=libdir", name])
-	# no -Wl,-rpath on Windows; rpath=0 skips it for portable/bundled builds
-	if libdir and env["platform"] != "windows" and int(ARGUMENTS.get("rpath", "1")):
-		# runtime location of libOpenColorIO/libOpenImageIO for the loaded .so
-		env.Append(LINKFLAGS=["-Wl,-rpath," + libdir[0]])
-		# transitive deps (e.g. fmt) live in the shared prefix include dir
-		# (e.g. Homebrew), which the .pc file does not propagate
+	if libdir and env["platform"] != "windows":
+		# runtime location of libOpenColorIO/libOpenImageIO for the loaded .so;
+		# rpath=0 skips it for portable/bundled builds (RUNPATH=$ORIGIN)
+		if int(ARGUMENTS.get("rpath", "1")):
+			env.Append(LINKFLAGS=["-Wl,-rpath," + libdir[0]])
+		# Transitive deps (e.g. fmt) live in the shared prefix include dir
+		# (e.g. Homebrew), which the .pc file does not propagate. Needed
+		# for compiling regardless of rpath.
 		p = os.path.dirname(libdir[0])
 		for _ in range(6):  # Cellar/<formula>/<ver>/lib → shared prefix include
 			cand = os.path.join(p, "include")
