@@ -41,8 +41,11 @@ def try_pkg(args):
 
 
 # godot-cpp compiles with -fno-exceptions; OpenColorIO API needs exceptions
-# (only our own sources are compiled after this line).
-env.Append(CCFLAGS=["-fexceptions"])
+# (only our own sources are compiled after this line). MSVC has them on by
+# default and rejects GCC-style flags.
+is_msvc = env["platform"] == "windows" and not int(ARGUMENTS.get("use_mingw", "0"))
+if not is_msvc:
+	env.Append(CCFLAGS=["-fexceptions"])
 
 # pkg-config is the default; OCIO_CFLAGS/OCIO_LIBS/OIIO_CFLAGS/OIIO_LIBS
 # env vars override it (Windows: point them at your vcpkg/OCIO build).
@@ -99,7 +102,8 @@ if not use_pkg:
 			+ os.environ.get("OIIO_CFLAGS", "").split() if p.startswith("-I")])
 
 
-env.Append(CCFLAGS=["-Wno-deprecated-declarations"])  # OCIO 2.2+ deprecates some 2.1 APIs we use
+# OCIO 2.2+ deprecates some 2.1 APIs we use.
+env.Append(CCFLAGS=["/wd4996"] if is_msvc else ["-Wno-deprecated-declarations"])
 
 if env["platform"] == "linux":
 	# Fail the link on unresolved symbols. A shared library links fine with
