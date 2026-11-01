@@ -1,0 +1,121 @@
+name: build-windows
+
+# OCIO GDExtension for Windows (x86_64) — the extension plus every DLL it
+# imports, so the addon works on a machine with nothing installed.
+# Windows has no rpath: the loader only searches the executable's own
+# directory (and PATH), hence the bundled DLL set listed in [dependencies].
+#
+# Toolchain: MSYS2 MINGW64 (gcc) with mingw-w64 packages for OpenColorIO
+# 2.6.0 / OpenImageIO; godot-cpp builds with use_mingw=yes.
+#
+# Produces the dist/ocio/win64 artifact:
+#   libgdocio.windows.template_{debug,release}.x86_64.dll
+#   libOpenColorIO_2_6.dll, libOpenImageIO.dll, ... (bundled imports)
+#   ocio.gdextension (windows section filled in) + dependencies-snippet.txt
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUNDLE: dist/ocio/win64
+
+jobs:
+  ocio-windows:
+    name: OCIO Windows x86_64 (portable bundle)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout (with godot-cpp submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up MSYS2 (MINGW64) with OpenColorIO/OpenImageIO
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-opencolorio
+            mingw-w64-x86_64-openimageio
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-scons
+            mingw-w64-x86_64-python
+
+      - name: Show dependency versions
+        run: |
+          pkg-config --modversion OpenColorIO OpenImageIO
+          g++ --version | head -1
+          scons --version | head -2
+
+      - name: Build (debug + release)
+        run: |
+          cd ocio
+          for target in template_debug template_release; do
+            scons platform=windows arch=x86_64 target=$target \
+              use_mingw=yes use_static_cpp=no install=0
+          done
+
+      - name: Bundle imported DLLs
+        run: |
+          cd ocio
+          out=$(cygpath -u "$GITHUB_WORKSPACE")/$BUNDLE
+          for target in template_debug template_release; do
+            tools/windows-bundle.sh stage \
+              "libgdocio.windows.$target.x86_64.dll" "$out" /mingw64/bin
+          done
+
+      - name: Verify every import is bundled
+        run: |
+          set -euo pipefail
+          cd ocio
+          out=$(cygpath -u "$GITHUB_WORKSPACE")/$BUNDLE
+          for target in template_debug template_release; do
+            tools/windows-bundle.sh verify \
+              "libgdocio.windows.$target.x86_64.dll" "$out"
+          done
+          ls "$out" | wc -l
+          du -sh "$out"
+
+      - name: Compose descriptor (windows section)
+        run: |
+          cd ocio
+          out=$(cygpath -u "$GITHUB_WORKSPACE")/$BUNDLE
+          tools/compose-gdextension.sh "$out/ocio.gdextension" "windows:$out"
+
+      # Windows python (not the MSYS2 one): its own directory is searched
+      # first, so an MSYS2 python would silently find /mingw64/bin/*.dll and
+      # the test would prove nothing.
+      - name: Load test with the addon folder as the only search path
+        shell: pwsh
+        run: |
+          $bundle = Join-Path "$env:GITHUB_WORKSPACE" "$env:BUNDLE"
+          $py = (Get-Command python).Source
+          $env:PATH = "C:\Windows\System32;C:\Windows"
+          & $py -c @"
+          import ctypes, os
+          d = r'$bundle'
+          os.add_dll_directory(d)
+          ctypes.WinDLL(os.path.join(d, 'libgdocio.windows.template_release.x86_64.dll'))
+          print('LoadLibrary OK')
+          "@
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocio-win64
+          path: dist/ocio/win64/
+          if-no-files-found: warn

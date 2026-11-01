@@ -6,7 +6,7 @@ folder and builds through GitHub Actions into portable artifacts.
 
 | Extension | What it provides | CI |
 | --- | --- | --- |
-| [`ocio/`](ocio/) | `OcioTransform`: exact OCIO color transforms, OCIO-generated GPU shaders, float EXR I/O | `build-linux.yml` (portable), `build-macos.yml` (universal) |
+| [`ocio/`](ocio/) | `OcioTransform`: exact OCIO color transforms, OCIO-generated GPU shaders, float EXR I/O | `build-linux.yml`, `build-macos.yml`, `build-windows.yml` (all portable) |
 
 Targets the **Godot 4.7** API (`godot-cpp` master submodule, `api_version=4.7`).
 
@@ -25,6 +25,8 @@ dependency closure, so a user needs nothing installed:
 - `ocio-linux64`: extension + 57 `.so` files, all `RUNPATH=$ORIGIN`
 - `ocio-macos-universal`: universal (arm64+x86_64) dylibs rewritten to
   `@rpath`, ad-hoc signed, deps exported to `Contents/Frameworks`
+- `ocio-win64`: extension + every imported DLL (no rpath on Windows, so
+  they ship next to the executable)
 
 ## Using an artifact in a Godot project
 

@@ -11,7 +11,10 @@
 #   compose-gdextension.sh <out.gdextension> <platform>:<bundle-dir> ...
 #
 #   compose-gdextension.sh addons/ocio/ocio.gdextension \
-#     macos:dist/ocio/macos linux:dist/ocio/linux64
+#     macos:dist/ocio/macos linux:dist/ocio/linux64 windows:dist/ocio/win64
+#
+# A windows bundle replaces the template's static win64 DLL list; without
+# one, that list is kept as-is.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
@@ -25,6 +28,7 @@ shift
 
 macos_snippet=
 linux_snippet=
+windows_snippet=
 for spec in "$@"; do
 	plat=${spec%%:*}
 	dir=${spec#*:}
@@ -37,13 +41,22 @@ for spec in "$@"; do
 	case "$plat" in
 	macos) macos_snippet=$snip ;;
 	linux) linux_snippet=$snip ;;
-	windows) fail "windows dependencies are part of the template" ;;
+	windows) windows_snippet=$snip ;;
 	esac
 done
 
 [ -f "$template" ] || fail "template not found: $template"
 
-awk -v macos="${macos_snippet:-}" -v linux="${linux_snippet:-}" '
+awk -v macos="${macos_snippet:-}" -v linux="${linux_snippet:-}" \
+	-v windows="${windows_snippet:-}" '
+	# A supplied windows bundle replaces the template'\''s static win64 list.
+	windows != "" && /^windows\.x86_64 = \{/ {
+		while ((getline line < windows) > 0) print line
+		close(windows)
+		skipping = 1
+		next
+	}
+	skipping { if ($0 == "}") skipping = 0; next }
 	{ print }
 	/^; macos dependencies are generated/ && macos != "" {
 		while ((getline line < macos) > 0) print line
@@ -61,5 +74,8 @@ if [ -n "$macos_snippet" ]; then
 fi
 if [ -n "$linux_snippet" ]; then
 	grep -q '^linux\.x86_64 = {' "$out" || fail "linux section missing from $out"
+fi
+if [ -n "$windows_snippet" ]; then
+	grep -q '^windows\.x86_64 = {' "$out" || fail "windows section missing from $out"
 fi
 echo "wrote $out"

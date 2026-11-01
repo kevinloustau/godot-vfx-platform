@@ -30,6 +30,7 @@ ocio/                       C++ source + build files (this directory)
   tools/macos-bundle.sh        portable macOS bundling (stage/merge, @rpath rewrite,
                               universal lipo, codesign, deps snippet)
   tools/linux-bundle.sh        portable Linux bundling (full closure, RUNPATH=$ORIGIN)
+  tools/windows-bundle.sh      portable Windows bundling (PE import closure)
   tools/compose-gdextension.sh multi-platform descriptor from per-platform snippets
 dist/ocio/                  build output (gitignored; CI uploads it as an artifact)
   macos/                      universal dylibs + bundled OCIO/OIIO dylibs +
@@ -38,6 +39,7 @@ dist/ocio/                  build output (gitignored; CI uploads it as an artifa
   win64/                      cross-built DLLs
 .github/workflows/build-macos.yml   macOS universal CI build
 .github/workflows/build-linux.yml   Linux portable bundle CI build
+.github/workflows/build-windows.yml Windows portable bundle CI build
 ```
 
 To consume, copy the CI artifact (or your local `dist/ocio/<platform>/`)
@@ -134,9 +136,24 @@ codesigns everything (required on arm64) and writes
 `dist/ocio/macos/ocio.gdextension` (template + generated macOS
 `[dependencies]` section) plus `dependencies-snippet.txt`.
 
+## Build (Windows)
+
+CI builds it (`.github/workflows/build-windows.yml`): MSYS2 MINGW64 with
+`mingw-w64-x86_64-opencolorio` / `-openimageio`, `scons platform=windows
+use_mingw=yes`, then `tools/windows-bundle.sh stage <dll> <out-dir>
+/mingw64/bin` copies every imported DLL (system DLLs excluded).
+Windows has no rpath, so the bundle must sit next to the exported
+executable — which is what the generated `windows.x86_64` `[dependencies]`
+section does.
+
 ## CI notes (GitHub Actions)
 
-Two workflows run per push/PR to `main`.
+Three workflows run per push/PR to `main`.
+
+`build-windows.yml` (windows-latest): MSYS2 MINGW64, builds debug+release,
+bundles imported DLLs, verifies every import is either bundled or a
+Windows system DLL, then loads the extension with a Windows python whose
+DLL search path is only the addon folder. Uploads `ocio-win64`.
 
 `build-linux.yml` (ubuntu-latest): installs OCIO/OIIO from conda-forge
 (linux-64, same versions as macOS), builds debug+release with `rpath=0`,
@@ -203,6 +220,8 @@ uniforms are keyed by their **sampler** names as declared in the shader.
 
 ## Known issues
 
+- The Windows bundle must be refreshed together with the DLL set: a
+  different MinGW/MSYS2 update can rename or add imports.
 - The Linux bundle ships ~57 shared libraries (~107 MB) because conda-forge's
   OIIO pulls ffmpeg/libheif/etc. Same for macOS (~306 MB, 92 dylibs).
 - Linux bundles glibc-compatible builds but not glibc itself: an exported
