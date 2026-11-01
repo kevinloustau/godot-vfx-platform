@@ -165,10 +165,10 @@ write_dist() { # <out-dir> — dependencies snippet + ready-to-use .gdextension
 			close(snippet)
 			done = 1
 		}
-	' "$gdextension_template" > "$out/ocio.gdextension"
+	' "$gdextension_template" > "$out/$gdext_name"
 	# The template itself mentions macos.debug under [libraries], so check for
 	# an injected snippet line instead.
-	grep -q 'Contents/Frameworks' "$out/ocio.gdextension" ||
+	grep -q 'Contents/Frameworks' "$out/$gdext_name" ||
 		fail "marker comment missing in $gdextension_template"
 }
 

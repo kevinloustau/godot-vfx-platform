@@ -140,6 +140,7 @@ write_dist() { # <out-dir> — dependencies snippet + ready-to-use .gdextension
 	} > "$snippet"
 
 	[ -f "$gdextension_template" ] || fail "template not found: $gdextension_template"
+	gdext_name=$(basename "$gdextension_template")
 	awk -v snippet="$snippet" '
 		{ print }
 		/^; linux dependencies are generated/ && !done {
@@ -147,12 +148,12 @@ write_dist() { # <out-dir> — dependencies snippet + ready-to-use .gdextension
 			close(snippet)
 			done = 1
 		}
-	' "$gdextension_template" > "$out/ocio.gdextension"
+	' "$gdextension_template" > "$out/$gdext_name"
 	# The template mentions linux.debug under [libraries], so look for an
 	# injected snippet line instead.
-	grep -q "$ADDON_RES_BASE/linux64/" "$out/ocio.gdextension" ||
+	grep -q "$ADDON_RES_BASE/linux64/" "$out/$gdext_name" ||
 		fail "marker comment missing in $gdextension_template"
-	echo "wrote $out/ocio.gdextension + dependencies-snippet.txt"
+	echo "wrote $out/$gdext_name + dependencies-snippet.txt"
 }
 
 case "${1:-}" in

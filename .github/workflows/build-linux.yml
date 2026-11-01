@@ -82,6 +82,7 @@ jobs:
               "$GITHUB_WORKSPACE/dist/ocio/linux64"
           done
           echo "--- dlopen test (dependency env is gone):"
+          cd "$GITHUB_WORKSPACE"
           python3 - <<'PY'
           import ctypes, glob
           for f in sorted(glob.glob("dist/ocio/linux64/*.so*")):
@@ -128,9 +129,16 @@ jobs:
             ffmpeg=${{ env.FFMPEG_VERSION }}=lgpl*
             pkg-config
 
+      # setup-micromamba activates the env only for its own steps; pin the
+      # prefix explicitly (CONDA_PREFIX is not exported to later steps).
+      - name: Locate the conda prefix
+        run: |
+          echo "CONDA_PREFIX=$MAMBA_ROOT_PREFIX/envs/ffmpeg" >> "$GITHUB_ENV"
+
       - name: Build (debug + release)
         run: |
           cd ffmpeg
+          ls "$CONDA_PREFIX/lib/pkgconfig/libavcodec.pc"
           for target in template_debug template_release; do
             PKG_CONFIG_PATH="$CONDA_PREFIX/lib/pkgconfig" \
               scons platform=linux arch=x86_64 target=$target install=0 rpath=0 use_static_cpp=no
@@ -159,6 +167,7 @@ jobs:
               "$GITHUB_WORKSPACE/$BUNDLE"
           done
           echo "--- dlopen test (dependency env is gone):"
+          cd "$GITHUB_WORKSPACE"
           python3 - <<'PY'
           import ctypes, glob
           for f in sorted(glob.glob("dist/ffmpeg/linux64/*.so*")):
