@@ -133,6 +133,11 @@ jobs:
     timeout-minutes: 60
     env:
       FFMPEG_VERSION: "6.1.2"
+      # per-project bundle-tool overrides (see ocio/tools/macos-bundle.sh):
+      # every step (stage, merge, compose) must see these
+      LIB_PREFIX: libgdffmpeg
+      ADDON_RES_BASE: res://addons/ffmpeg
+      GDEXTENSION_TEMPLATE: ${{ github.workspace }}/ffmpeg/ffmpeg.gdextension
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -163,9 +168,6 @@ jobs:
       - name: Stage per-arch bundles
         run: |
           cd ffmpeg
-          export LIB_PREFIX=libgdffmpeg
-          export ADDON_RES_BASE="res://addons/ffmpeg"
-          export GDEXTENSION_TEMPLATE="$PWD/ffmpeg.gdextension"
           for target in template_debug template_release; do
             ../ocio/tools/macos-bundle.sh stage \
               "libgdffmpeg.macos.$target.arm64.dylib" \
@@ -180,7 +182,6 @@ jobs:
       - name: Merge universal binaries + codesign
         run: |
           cd ffmpeg
-          export LIB_PREFIX=libgdffmpeg
           for target in template_debug template_release; do
             ../ocio/tools/macos-bundle.sh merge $target \
               ../build/ff-stage/arm64/$target \
@@ -214,9 +215,7 @@ jobs:
       - name: Compose descriptor
         run: |
           cd ffmpeg
-          LIB_PREFIX=libgdffmpeg ADDON_RES_BASE="res://addons/ffmpeg" \
-            GDEXTENSION_TEMPLATE="$PWD/ffmpeg.gdextension" \
-            ../ocio/tools/compose-gdextension.sh "$GITHUB_WORKSPACE/dist/ffmpeg/macos/ffmpeg.gdextension" \
+          ../ocio/tools/compose-gdextension.sh "$GITHUB_WORKSPACE/dist/ffmpeg/macos/ffmpeg.gdextension" \
             "macos:$GITHUB_WORKSPACE/dist/ffmpeg/macos"
 
       - name: Upload artifact

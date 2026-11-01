@@ -147,6 +147,10 @@ jobs:
     env:
       FFMPEG_VERSION: "6.1.2"
       BUNDLE: dist/ffmpeg/win64
+      # per-project bundle-tool overrides (see ocio/tools/windows-bundle.py)
+      LIB_PREFIX: libgdffmpeg
+      ADDON_RES_BASE: res://addons/ffmpeg
+      GDEXTENSION_TEMPLATE: ${{ github.workspace }}/ffmpeg/ffmpeg.gdextension
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -192,9 +196,6 @@ jobs:
       - name: Bundle imported DLLs
         run: |
           cd ffmpeg
-          export LIB_PREFIX=libgdffmpeg
-          export ADDON_RES_BASE="res://addons/ffmpeg"
-          export GDEXTENSION_TEMPLATE="$PWD/ffmpeg.gdextension"
           for target in template_debug template_release; do
             python ../ocio/tools/windows-bundle.py stage \
               "libgdffmpeg.windows.$target.x86_64.dll" \
@@ -215,9 +216,7 @@ jobs:
       - name: Compose descriptor (windows section)
         run: |
           cd ffmpeg
-          LIB_PREFIX=libgdffmpeg ADDON_RES_BASE="res://addons/ffmpeg" \
-            GDEXTENSION_TEMPLATE="$PWD/ffmpeg.gdextension" \
-            ../ocio/tools/compose-gdextension.sh "$GITHUB_WORKSPACE/$BUNDLE/ffmpeg.gdextension" \
+          ../ocio/tools/compose-gdextension.sh "$GITHUB_WORKSPACE/$BUNDLE/ffmpeg.gdextension" \
             "windows:$GITHUB_WORKSPACE/$BUNDLE"
 
       # The addon folder must be the only search path: a PATH containing the

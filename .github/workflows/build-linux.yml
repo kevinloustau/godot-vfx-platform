@@ -110,6 +110,10 @@ jobs:
     env:
       FFMPEG_VERSION: "6.1.2"
       BUNDLE: dist/ffmpeg/linux64
+      # per-project bundle-tool overrides (see ocio/tools/linux-bundle.sh)
+      LIB_PREFIX: libgdffmpeg
+      ADDON_RES_BASE: res://addons/ffmpeg
+      GDEXTENSION_TEMPLATE: ${{ github.workspace }}/ffmpeg/ffmpeg.gdextension
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4
@@ -147,9 +151,6 @@ jobs:
       - name: Bundle dependencies (RUNPATH=$ORIGIN)
         run: |
           cd ffmpeg
-          export LIB_PREFIX=libgdffmpeg
-          export ADDON_RES_BASE="res://addons/ffmpeg"
-          export GDEXTENSION_TEMPLATE="$PWD/ffmpeg.gdextension"
           for target in template_debug template_release; do
             ../ocio/tools/linux-bundle.sh stage "libgdffmpeg.linux.$target.x86_64.so" \
               "$GITHUB_WORKSPACE/$BUNDLE" "$CONDA_PREFIX/lib"
@@ -159,8 +160,6 @@ jobs:
         run: |
           set -euo pipefail
           cd ffmpeg
-          export LIB_PREFIX=libgdffmpeg
-          export ADDON_RES_BASE="res://addons/ffmpeg"
           mv "$CONDA_PREFIX" "$CONDA_PREFIX-hidden"
           for target in template_debug template_release; do
             ../ocio/tools/linux-bundle.sh verify "libgdffmpeg.linux.$target.x86_64.so" \
@@ -183,8 +182,7 @@ jobs:
       - name: Compose descriptor
         run: |
           cd ffmpeg
-          GDEXTENSION_TEMPLATE="$PWD/ffmpeg.gdextension" \
-            ../ocio/tools/compose-gdextension.sh "$GITHUB_WORKSPACE/$BUNDLE/ffmpeg.gdextension" \
+          ../ocio/tools/compose-gdextension.sh "$GITHUB_WORKSPACE/$BUNDLE/ffmpeg.gdextension" \
             "linux:$GITHUB_WORKSPACE/$BUNDLE"
 
       - name: Upload artifact
