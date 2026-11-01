@@ -46,10 +46,26 @@ env.Append(CCFLAGS=["-fexceptions"])
 
 # pkg-config is the default; OCIO_CFLAGS/OCIO_LIBS/OIIO_CFLAGS/OIIO_LIBS
 # env vars override it (Windows: point them at your vcpkg/OCIO build).
+def apply_lib_flags(flags):
+	# -L/-l must go to LIBPATH/LIBS: SCons puts LINKFLAGS *before* the object
+	# files, and with -Wl,--as-needed (the Ubuntu default) libraries listed
+	# there are dropped, leaving undefined symbols and no DT_NEEDED entry.
+	extra = []
+	for f in flags:
+		if f.startswith("-L"):
+			env.AppendUnique(LIBPATH=[f[2:]])
+		elif f.startswith("-l"):
+			env.AppendUnique(LIBS=[f[2:]])
+		else:
+			extra.append(f)
+	if extra:
+		env.Append(LINKFLAGS=extra)
+
+
 env.Append(CCFLAGS=os.environ.get("OCIO_CFLAGS", "").split())
 env.Append(CCFLAGS=os.environ.get("OIIO_CFLAGS", "").split())
-env.Append(LINKFLAGS=os.environ.get("OCIO_LIBS", "").split())
-env.Append(LINKFLAGS=os.environ.get("OIIO_LIBS", "").split())
+apply_lib_flags(os.environ.get("OCIO_LIBS", "").split())
+apply_lib_flags(os.environ.get("OIIO_LIBS", "").split())
 use_pkg = not (os.environ.get("OCIO_CFLAGS") and os.environ.get("OCIO_LIBS")
 		and os.environ.get("OIIO_CFLAGS") and os.environ.get("OIIO_LIBS"))
 
@@ -61,8 +77,8 @@ for name, lib in (("OpenColorIO", "OCIO"), ("OpenImageIO", "OIIO")):
 	if cflags is None or libs is None:
 		print("pkg-config cannot find %s (needed by the OCIO extension)" % name)
 		Exit(1)
-	env.Append(CCFLAGS=cflags)  # --cflags only: -l/-L are link flags
-	env.Append(LINKFLAGS=libs)
+	env.Append(CCFLAGS=cflags)
+	apply_lib_flags(libs)
 	libdir = try_pkg(["pkg-config", "--variable=libdir", name])
 	if libdir and env["platform"] != "windows":
 		# runtime location of libOpenColorIO/libOpenImageIO for the loaded .so;
@@ -84,6 +100,12 @@ if not use_pkg:
 
 
 env.Append(CCFLAGS=["-Wno-deprecated-declarations"])  # OCIO 2.2+ deprecates some 2.1 APIs we use
+
+if env["platform"] == "linux":
+	# Fail the link on unresolved symbols. A shared library links fine with
+	# undefined symbols by default, which silently produced an extension that
+	# could not dlopen (e.g. when --as-needed dropped the -l flags).
+	env.Append(LINKFLAGS=["-Wl,--no-undefined"])
 
 if env["platform"] == "macos":
 	# Portable bundle: tools/macos-bundle.sh rewrites the dependency install
