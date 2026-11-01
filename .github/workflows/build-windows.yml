@@ -59,6 +59,12 @@ jobs:
             libopenimageio=${{ env.OIIO_VERSION }}
             fmt
 
+      # setup-micromamba activates the env only for its own steps; pin the
+      # prefix explicitly (CONDA_PREFIX is not exported to later steps).
+      - name: Locate the conda prefix
+        run: |
+          echo "CONDA_PREFIX=C:/Users/runneradmin/micromamba/envs/ocio" >> "$GITHUB_ENV"
+
       - name: Install build tools
         run: |
           python -m pip install --disable-pip-version-check scons pefile
@@ -66,6 +72,8 @@ jobs:
       - name: Build (debug + release)
         run: |
           cd ocio
+          CONDA_PREFIX=$(cygpath -u "$CONDA_PREFIX")
+          ls "$CONDA_PREFIX/Library/include/OpenColorIO/OpenColorIO.h"
           lib="$CONDA_PREFIX/Library/lib"
           inc="$CONDA_PREFIX/Library/include"
           # No pkg-config on Windows: point the build at the conda prefix.
