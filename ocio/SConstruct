@@ -110,8 +110,9 @@ for name, lib in (("OpenColorIO", "OCIO"), ("OpenImageIO", "OIIO")):
 				env.Append(CPPPATH=[cand])
 			p = os.path.dirname(p)
 if not use_pkg:
-	env.AppendUnique(CPPPATH=[p[2:] for p in os.environ.get("OCIO_CFLAGS", "").split()
-			+ os.environ.get("OIIO_CFLAGS", "").split() if p.startswith("-I")])
+	# env-var override path: includes already routed through
+	# apply_include_flags() above (same CPPPATH mechanism as pkg-config).
+	pass
 
 
 # OCIO 2.2+ deprecates some 2.1 APIs we use.
