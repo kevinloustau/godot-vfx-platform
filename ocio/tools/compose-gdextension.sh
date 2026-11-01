@@ -18,7 +18,8 @@
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
-template="$script_dir/../ocio.gdextension"
+# Per-project override (default: the ocio descriptor template).
+template=${GDEXTENSION_TEMPLATE:-"$script_dir/../ocio.gdextension"}
 
 fail() { echo "compose-gdextension: $*" >&2; exit 1; }
 

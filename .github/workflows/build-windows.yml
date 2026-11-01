@@ -40,10 +40,12 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Checkout (with godot-cpp submodule)
+      - name: Checkout (with submodules)
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # top-level only: ffmpeg-src's nested ffmpeg-kit submodule is huge
+          # and not needed (dependencies come from conda-forge)
+          submodules: true
 
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -133,4 +135,110 @@ jobs:
         with:
           name: ocio-win64
           path: dist/ocio/win64/
+          if-no-files-found: warn
+
+  ffmpeg-windows:
+    name: FFmpeg Windows x86_64 (portable bundle)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      FFMPEG_VERSION: "6.1.2"
+      BUNDLE: dist/ffmpeg/win64
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install FFmpeg from conda-forge (win-64, LGPL)
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: ffmpeg
+          create-args: >-
+            ffmpeg=${{ env.FFMPEG_VERSION }}=lgpl*
+
+      - name: Install build tools
+        run: |
+          python -m pip install --disable-pip-version-check scons pefile
+
+      # setup-micromamba activates the env only for its own steps; pin the
+      # prefix explicitly (CONDA_PREFIX is not exported to later steps).
+      - name: Locate the conda prefix
+        run: |
+          echo "CONDA_PREFIX=C:/Users/runneradmin/micromamba/envs/ffmpeg" >> "$GITHUB_ENV"
+
+      - name: Build (debug + release)
+        run: |
+          cd ffmpeg
+          CONDA_PREFIX=$(cygpath -u "$CONDA_PREFIX")
+          ls "$CONDA_PREFIX/Library/include/libavcodec/avcodec.h"
+          lib="$CONDA_PREFIX/Library/lib"
+          inc="$CONDA_PREFIX/Library/include"
+          export FFMPEG_CFLAGS="-I$inc" FFMPEG_LIBS="-L$lib -lavcodec -lavfilter -lavformat -lavutil -lswresample -lswscale"
+          for target in template_debug template_release; do
+            scons platform=windows arch=x86_64 target=$target \
+              use_static_cpp=no install=0
+          done
+          ls -la *.dll
+
+      - name: Bundle imported DLLs
+        run: |
+          cd ffmpeg
+          export LIB_PREFIX=libgdffmpeg
+          export ADDON_RES_BASE="res://addons/ffmpeg"
+          export GDEXTENSION_TEMPLATE="$PWD/ffmpeg.gdextension"
+          for target in template_debug template_release; do
+            python ../ocio/tools/windows-bundle.py stage \
+              "libgdffmpeg.windows.$target.x86_64.dll" \
+              "$GITHUB_WORKSPACE/$BUNDLE" "$CONDA_PREFIX/Library/bin"
+          done
+
+      - name: Verify every import is bundled
+        run: |
+          set -euo pipefail
+          cd ffmpeg
+          for target in template_debug template_release; do
+            python ../ocio/tools/windows-bundle.py verify \
+              "libgdffmpeg.windows.$target.x86_64.dll" "$GITHUB_WORKSPACE/$BUNDLE"
+          done
+          ls "$GITHUB_WORKSPACE/$BUNDLE" | wc -l
+          du -sh "$GITHUB_WORKSPACE/$BUNDLE"
+
+      - name: Compose descriptor (windows section)
+        run: |
+          cd ffmpeg
+          LIB_PREFIX=libgdffmpeg ADDON_RES_BASE="res://addons/ffmpeg" \
+            GDEXTENSION_TEMPLATE="$PWD/ffmpeg.gdextension" \
+            ../ocio/tools/compose-gdextension.sh "$GITHUB_WORKSPACE/$BUNDLE/ffmpeg.gdextension" \
+            "windows:$GITHUB_WORKSPACE/$BUNDLE"
+
+      # The addon folder must be the only search path: a PATH containing the
+      # conda env would hide any DLL that was not bundled.
+      - name: Load test with only the addon folder on the DLL search path
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/$BUNDLE"
+          PATH="/c/Windows/System32:/c/Windows" \
+            "$(cygpath -u "$(python -c 'import sys; print(sys.executable)')")" - <<'PY'
+          import ctypes, os
+          d = os.getcwd()
+          os.add_dll_directory(d)
+          ctypes.WinDLL(os.path.join(d, "libgdffmpeg.windows.template_release.x86_64.dll"))
+          print("LoadLibrary OK")
+          PY
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-win64
+          path: dist/ffmpeg/win64/
           if-no-files-found: warn

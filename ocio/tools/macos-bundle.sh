@@ -19,7 +19,11 @@
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
-gdextension_template="$script_dir/../ocio.gdextension"
+# Per-project overrides (defaults: the ocio extension). Export LIB_PREFIX,
+# ADDON_RES_BASE and GDEXTENSION_TEMPLATE to bundle another project.
+gdextension_template=${GDEXTENSION_TEMPLATE:-"$script_dir/../ocio.gdextension"}
+LIB_PREFIX=${LIB_PREFIX:-libgdocio}
+ADDON_RES_BASE=${ADDON_RES_BASE:-res://addons/ocio}
 
 fail() { echo "macos-bundle: $*" >&2; exit 1; }
 
@@ -39,7 +43,7 @@ dep_names() {
 	local f
 	for f in *.dylib; do
 		case "$f" in
-		libgdocio*) continue ;;
+		$LIB_PREFIX*) continue ;;
 		esac
 		[ -e "$f" ] && printf '%s\n' "$f"
 	done | sort
@@ -91,8 +95,8 @@ rewrite_tree() { # <dep-libdir> <out-dir> <name>
 
 merge() { # <target> <arm64-dir> <x86_64-dir> <out-dir>
 	local target=$1 armdir=$2 x86dir=$3 out=$4
-	local main_arm="libgdocio.macos.$target.arm64.dylib"
-	local main_x86="libgdocio.macos.$target.x86_64.dylib"
+	local main_arm="$LIB_PREFIX.macos.$target.arm64.dylib"
+	local main_x86="$LIB_PREFIX.macos.$target.x86_64.dylib"
 	[ -f "$armdir/$main_arm" ] || fail "missing $armdir/$main_arm"
 	[ -f "$x86dir/$main_x86" ] || fail "missing $x86dir/$main_x86"
 	mkdir -p "$out"
@@ -112,7 +116,7 @@ $x86_deps"
 	fi
 
 	# Main library -> universal binary.
-	lipo -create -output "$out/libgdocio.macos.$target.universal.dylib" \
+	lipo -create -output "$out/$LIB_PREFIX.macos.$target.universal.dylib" \
 		"$armdir/$main_arm" "$x86dir/$main_x86"
 
 	# Dependencies -> universal binaries.
@@ -141,12 +145,12 @@ write_dist() { # <out-dir> — dependencies snippet + ready-to-use .gdextension
 		echo "; copied to Contents/Frameworks by the macOS export)."
 		printf 'macos.debug = {\n'
 		for dep in $(cd "$out" && dep_names); do
-			printf '\t"res://addons/ocio/macos/%s": "Contents/Frameworks",\n' "$dep"
+			printf '\t"%s/macos/%s": "Contents/Frameworks",\n' "$ADDON_RES_BASE" "$dep"
 		done
 		printf '}\n'
 		printf 'macos.release = {\n'
 		for dep in $(cd "$out" && dep_names); do
-			printf '\t"res://addons/ocio/macos/%s": "Contents/Frameworks",\n' "$dep"
+			printf '\t"%s/macos/%s": "Contents/Frameworks",\n' "$ADDON_RES_BASE" "$dep"
 		done
 		printf '}\n'
 	} > "$snippet"

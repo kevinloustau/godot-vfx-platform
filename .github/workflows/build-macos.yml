@@ -35,10 +35,12 @@ jobs:
       OCIO_VERSION: "2.6.0"
       OIIO_VERSION: "3.2.1.2"
     steps:
-      - name: Checkout (with godot-cpp submodule)
+      - name: Checkout (with submodules)
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # top-level only: ffmpeg-src's nested ffmpeg-kit submodule is huge
+          # and not needed (dependencies come from conda-forge)
+          submodules: true
 
       - name: Install build tools (Homebrew, arm64)
         run: brew install scons pkg-config
@@ -123,4 +125,104 @@ jobs:
         with:
           name: ocio-macos-universal
           path: dist/ocio/macos/
+          if-no-files-found: warn
+
+  ffmpeg-macos-universal:
+    name: FFmpeg universal (arm64 + x86_64)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      FFMPEG_VERSION: "6.1.2"
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install build tools (Homebrew, arm64)
+        run: brew install scons pkg-config
+
+      - name: Install FFmpeg from conda-forge (LGPL, osx-arm64 + osx-64)
+        run: |
+          curl -Ls https://micro.mamba.pm/api/micromamba/osx-arm64/latest | tar -xj -C "$RUNNER_TEMP" bin/micromamba
+          MM="$RUNNER_TEMP/bin/micromamba"
+          export MAMBA_ROOT_PREFIX="$RUNNER_TEMP/mamba"
+          CONDA_SUBDIR=osx-arm64 "$MM" create -y -p "$RUNNER_TEMP/env-arm64" -c conda-forge "ffmpeg=$FFMPEG_VERSION=lgpl*"
+          CONDA_SUBDIR=osx-64 "$MM" create -y -p "$RUNNER_TEMP/env-x86_64" -c conda-forge "ffmpeg=$FFMPEG_VERSION=lgpl*"
+
+      - name: Build (debug + release, arm64 + x86_64)
+        run: |
+          cd ffmpeg
+          for target in template_debug template_release; do
+            PKG_CONFIG_PATH="$RUNNER_TEMP/env-arm64/lib/pkgconfig" \
+              scons platform=macos arch=arm64 target=$target install=0 rpath=0
+            PKG_CONFIG_PATH="$RUNNER_TEMP/env-x86_64/lib/pkgconfig" \
+              scons platform=macos arch=x86_64 target=$target install=0 rpath=0
+          done
+
+      - name: Stage per-arch bundles
+        run: |
+          cd ffmpeg
+          export LIB_PREFIX=libgdffmpeg
+          export ADDON_RES_BASE="res://addons/ffmpeg"
+          export GDEXTENSION_TEMPLATE="$PWD/ffmpeg.gdextension"
+          for target in template_debug template_release; do
+            ../ocio/tools/macos-bundle.sh stage \
+              "libgdffmpeg.macos.$target.arm64.dylib" \
+              "$RUNNER_TEMP/env-arm64/lib" \
+              ../build/ff-stage/arm64/$target
+            ../ocio/tools/macos-bundle.sh stage \
+              "libgdffmpeg.macos.$target.x86_64.dylib" \
+              "$RUNNER_TEMP/env-x86_64/lib" \
+              ../build/ff-stage/x86_64/$target
+          done
+
+      - name: Merge universal binaries + codesign
+        run: |
+          cd ffmpeg
+          export LIB_PREFIX=libgdffmpeg
+          for target in template_debug template_release; do
+            ../ocio/tools/macos-bundle.sh merge $target \
+              ../build/ff-stage/arm64/$target \
+              ../build/ff-stage/x86_64/$target \
+              ../dist/ffmpeg/macos
+          done
+
+      - name: Verify bundle
+        run: |
+          set -euo pipefail
+          ls -la dist/ffmpeg/macos
+          for lib in dist/ffmpeg/macos/*.dylib; do
+            lipo -archs "$lib"
+          done
+          bad=$(otool -L dist/ffmpeg/macos/*.dylib | awk '/^\t/ { print $1 }' \
+            | grep -v -e '^@rpath' -e '^/usr/lib' -e '/System/' || true)
+          if [ -n "$bad" ]; then
+            echo "unrelocated references:"; echo "$bad"; exit 1
+          fi
+          python3 - <<'PY'
+          import ctypes, glob
+          for f in sorted(glob.glob("dist/ffmpeg/macos/*.dylib")):
+              if "libgdffmpeg" in f:
+                  continue
+              ctypes.CDLL(f)
+          ctypes.CDLL("dist/ffmpeg/macos/libgdffmpeg.macos.template_release.universal.dylib")
+          print("dlopen OK")
+          PY
+          du -sh dist/ffmpeg/macos
+
+      - name: Compose descriptor
+        run: |
+          cd ffmpeg
+          LIB_PREFIX=libgdffmpeg ADDON_RES_BASE="res://addons/ffmpeg" \
+            GDEXTENSION_TEMPLATE="$PWD/ffmpeg.gdextension" \
+            ../ocio/tools/compose-gdextension.sh "$GITHUB_WORKSPACE/dist/ffmpeg/macos/ffmpeg.gdextension" \
+            "macos:$GITHUB_WORKSPACE/dist/ffmpeg/macos"
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-macos-universal
+          path: dist/ffmpeg/macos/
           if-no-files-found: warn

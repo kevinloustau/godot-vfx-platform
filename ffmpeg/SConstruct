@@ -1,0 +1,148 @@
+#!/usr/bin/env python
+# GDExtension build: EIRTeam.FFmpeg (video decoding via FFmpeg) for Godot 4.
+#
+# The C++ sources are the ffmpeg-src submodule (EIRTeam/EIRTeam.FFmpeg,
+# upstream MIT license); this SConstruct compiles them against the shared
+# godot-cpp submodule like the ocio extension, so the whole repo builds with
+# the same engine API (api_version, default 4.7).
+#
+# Usage (from this directory):
+#   scons target=template_debug          # godot-cpp is built on demand
+#   scons target=template_release
+#   scons arch=arm64                     # macOS arch (arm64 / x86_64; the
+#                                        # bundle script lipo-merges into
+#                                        # .universal.dylib)
+#   scons rpath=0                        # no -rpath to the dep libdir
+#                                        # (portable/bundled builds)
+#   scons install=0                      # skip copying into dist/ffmpeg
+#
+# Dependencies (pkg-config): libavcodec, libavfilter, libavformat, libavutil,
+# libswresample, libswscale (FFmpeg 6.1 tested, LGPL build).
+# Override with FFMPEG_CFLAGS / FFMPEG_LIBS env vars (Windows: point them
+# at the conda prefix, e.g. Library/include and Library/bin).
+
+import os
+import subprocess
+import sys
+
+env = Environment()
+
+godot_cpp = ARGUMENTS.get("godot_cpp", os.path.join("..", "godot-cpp"))
+if not os.path.isdir(godot_cpp):
+	print("godot-cpp not found at '%s' (git submodule update --init, or pass godot_cpp=...)" % godot_cpp)
+	Exit(1)
+api_version = ARGUMENTS.get("api_version", "4.7")
+SConscript(godot_cpp + "/SConstruct", {"env": env, "api_version": api_version}, duplicate=False)
+
+eirteam = ARGUMENTS.get("eirteam_src", os.path.join("..", "ffmpeg-src"))
+if not os.path.isdir(eirteam):
+	print("ffmpeg-src not found at '%s' (git submodule update --init, or pass eirteam_src=...)" % eirteam)
+	Exit(1)
+
+env.Append(CPPDEFINES=["GDEXTENSION"])
+env.Append(CPPPATH=[eirteam, os.path.join(eirteam, "gdextension_build"), "gen", "compat"])
+
+
+def apply_include_flags(flags):
+	for f in flags:
+		if f.startswith("-I"):
+			env.AppendUnique(CPPPATH=[f[2:]])
+
+
+def apply_lib_flags(flags):
+	# -L/-l must go to LIBPATH/LIBS: SCons puts LINKFLAGS *before* the object
+	# files, and with -Wl,--as-needed (the Ubuntu default) libraries listed
+	# there are dropped, leaving undefined symbols and no DT_NEEDED entry.
+	extra = []
+	for f in flags:
+		if f.startswith("-L"):
+			env.AppendUnique(LIBPATH=[f[2:]])
+		elif f.startswith("-l"):
+			env.AppendUnique(LIBS=[f[2:]])
+		else:
+			extra.append(f)
+	if extra:
+		env.Append(LINKFLAGS=extra)
+
+
+# pkg-config is the default; FFMPEG_CFLAGS/FFMPEG_LIBS override it.
+env.Append(CCFLAGS=os.environ.get("FFMPEG_CFLAGS", "").split())
+apply_include_flags(os.environ.get("FFMPEG_CFLAGS", "").split())
+apply_lib_flags(os.environ.get("FFMPEG_LIBS", "").split())
+use_pkg = not (os.environ.get("FFMPEG_CFLAGS") and os.environ.get("FFMPEG_LIBS"))
+
+ffmpeg_libs = ["libavcodec", "libavfilter", "libavformat", "libavutil",
+		"libswresample", "libswscale"]
+if use_pkg:
+	for name in ffmpeg_libs:
+		cflags = subprocess.run(["pkg-config", "--cflags", name],
+				capture_output=True, text=True)
+		libs = subprocess.run(["pkg-config", "--libs", name],
+				capture_output=True, text=True)
+		if cflags.returncode != 0 or libs.returncode != 0:
+			print("pkg-config cannot find %s (needed by the FFmpeg extension)" % name)
+			Exit(1)
+		apply_include_flags(cflags.stdout.split())
+		apply_lib_flags(libs.stdout.split())
+		libdir = subprocess.run(["pkg-config", "--variable=libdir", name],
+				capture_output=True, text=True).stdout.strip()
+		if libdir and env["platform"] != "windows":
+			# rpath=0 skips it for portable/bundled builds (RUNPATH=$ORIGIN)
+			if int(ARGUMENTS.get("rpath", "1")):
+				env.Append(LINKFLAGS=["-Wl,-rpath," + libdir])
+
+# Force-include the namespace compat shim before every translation unit.
+is_msvc_ff = env["platform"] == "windows" and not int(ARGUMENTS.get("use_mingw", "0"))
+force_include = os.path.abspath(os.path.join("compat", "compat_force.hpp"))
+if is_msvc_ff:
+	env.Append(CCFLAGS=["/FI" + force_include])
+else:
+	env.Append(CCFLAGS=["-include", force_include])
+
+if env["platform"] == "linux":
+	# Fail the link on unresolved symbols (see the ocio SConstruct for the
+	# story: a shared library otherwise links fine with undefined symbols).
+	env.Append(LINKFLAGS=["-Wl,--no-undefined"])
+
+if env["platform"] == "macos":
+	# Portable bundle: the bundling scripts rewrite the dependency install
+	# names to @rpath/<name>. @loader_path resolves them next to the library
+	# (editor), @executable_path/../Frameworks is where Godot's macOS export
+	# places them. headerpad leaves room for install_name_tool edits.
+	env.Append(LINKFLAGS=["-Wl,-headerpad_max_install_names",
+			"-Wl,-install_name,@rpath/libgdffmpeg.macos.%s.universal.dylib" % env["target"],
+			"-Wl,-rpath,@loader_path",
+			"-Wl,-rpath,@executable_path/../Frameworks"])
+
+# yuv_to_rgb.glsl -> gen/yuv_to_rgb.glsl.gen.h (same output format as
+# upstream's glsl_builders.py, which the sources #include).
+
+
+def gen_shader_header(target, source, env):
+	subprocess.check_call([sys.executable, str(source[1]), str(source[0]), str(target[0])])
+
+
+glsl_h = env.Command(
+	os.path.join("gen", "yuv_to_rgb.glsl.gen.h"),
+	[os.path.join(eirteam, "yuv_to_rgb.glsl"), "gen_yuv_shader.py"],
+	env.Action(gen_shader_header, "$GEN_COM"))
+
+sources = Glob(os.path.join(eirteam, "*.cpp"))
+sources += [os.path.join(eirteam, "gdextension_build", "command_queue_mt.cpp")]
+env.Depends(sources, glsl_h)
+
+suffix = ".{}.{}.{}{}".format(
+	env["platform"],
+	env["target"],
+	env["arch"],
+	env["SHLIBSUFFIX"])
+library = env.SharedLibrary("libgdffmpeg{}".format(suffix), source=sources)
+Default(library)  # with install=0 this is still the default target
+
+# Install: binary + descriptor into dist/ffmpeg/<platform>/ at the repo root.
+dist = os.path.join("..", "dist", "ffmpeg")
+platform_dir = {"linux": "linux64", "windows": "win64", "macos": "macos"}.get(env["platform"])
+if platform_dir and int(ARGUMENTS.get("install", "1")):
+	installs = [env.Install(os.path.join(dist, platform_dir), library),
+			env.Install(dist, "ffmpeg.gdextension")]
+	Default(installs)

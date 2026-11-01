@@ -7,6 +7,7 @@ folder and builds through GitHub Actions into portable artifacts.
 | Extension | What it provides | CI |
 | --- | --- | --- |
 | [`ocio/`](ocio/) | `OcioTransform`: exact OCIO color transforms, OCIO-generated GPU shaders, float EXR I/O | `build-linux.yml`, `build-macos.yml`, `build-windows.yml` (all portable) |
+| [`ffmpeg/`](ffmpeg/) | EIRTeam.FFmpeg: FFmpeg 6.1 (LGPL) video decoding (`FFmpegVideoStream`) — sources in the `ffmpeg-src/` submodule | same workflows, one job per platform |
 
 Targets the **Godot 4.7** API (`godot-cpp` master submodule, `api_version=4.7`).
 
@@ -27,6 +28,8 @@ dependency closure, so a user needs nothing installed:
   `@rpath`, ad-hoc signed, deps exported to `Contents/Frameworks`
 - `ocio-win64`: extension + every imported DLL (no rpath on Windows, so
   they ship next to the executable)
+- `ffmpeg-linux64` / `ffmpeg-macos-universal` / `ffmpeg-win64`: the
+  FFmpeg extension with its LGPL FFmpeg closure, same portability rules
 
 ## Using an artifact in a Godot project
 

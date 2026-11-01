@@ -21,7 +21,11 @@
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
-gdextension_template="$script_dir/../ocio.gdextension"
+# Per-project overrides (defaults: the ocio extension). Export LIB_PREFIX,
+# ADDON_RES_BASE and GDEXTENSION_TEMPLATE to bundle another project.
+gdextension_template=${GDEXTENSION_TEMPLATE:-"$script_dir/../ocio.gdextension"}
+LIB_PREFIX=${LIB_PREFIX:-libgdocio}
+ADDON_RES_BASE=${ADDON_RES_BASE:-res://addons/ocio}
 
 fail() { echo "linux-bundle: $*" >&2; exit 1; }
 
@@ -129,8 +133,8 @@ write_dist() { # <out-dir> — dependencies snippet + ready-to-use .gdextension
 		echo "; section for ocio.gdextension (bundled .so files, RUNPATH=\$ORIGIN,"
 		echo "; copied next to the exported executable where \$ORIGIN finds them)."
 		printf 'linux.x86_64 = {\n'
-		for dep in $(cd "$out" && ls *.so* | grep -v '^libgdocio' | sort); do
-			printf '\t"res://addons/ocio/linux64/%s": "",\n' "$dep"
+		for dep in $(cd "$out" && ls *.so* | grep -v "^$LIB_PREFIX" | sort); do
+			printf '\t"%s/linux64/%s": "",\n' "$ADDON_RES_BASE" "$dep"
 		done
 		printf '}\n'
 	} > "$snippet"
@@ -146,7 +150,7 @@ write_dist() { # <out-dir> — dependencies snippet + ready-to-use .gdextension
 	' "$gdextension_template" > "$out/ocio.gdextension"
 	# The template mentions linux.debug under [libraries], so look for an
 	# injected snippet line instead.
-	grep -q 'res://addons/ocio/linux64/libOpenColorIO' "$out/ocio.gdextension" ||
+	grep -q "$ADDON_RES_BASE/linux64/" "$out/ocio.gdextension" ||
 		fail "marker comment missing in $gdextension_template"
 	echo "wrote $out/ocio.gdextension + dependencies-snippet.txt"
 }

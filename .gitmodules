@@ -2,3 +2,6 @@
 	path = godot-cpp
 	url = https://github.com/godotengine/godot-cpp
 	branch = master
+[submodule "ffmpeg-src"]
+	path = ffmpeg-src
+	url = https://github.com/EIRTeam/EIRTeam.FFmpeg

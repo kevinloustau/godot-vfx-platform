@@ -31,10 +31,12 @@ jobs:
       OCIO_VERSION: "2.6.0"
       OIIO_VERSION: "3.2.1.2"
     steps:
-      - name: Checkout (with godot-cpp submodule)
+      - name: Checkout (with submodules)
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          # top-level only: ffmpeg-src's nested ffmpeg-kit submodule is huge
+          # and not needed (dependencies come from conda-forge)
+          submodules: true
 
       - name: Install build tools
         run: |
@@ -98,4 +100,88 @@ jobs:
         with:
           name: ocio-linux64
           path: dist/ocio/linux64/
+          if-no-files-found: warn
+
+  ffmpeg-linux:
+    name: FFmpeg Linux x86_64 (portable bundle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      FFMPEG_VERSION: "6.1.2"
+      BUNDLE: dist/ffmpeg/linux64
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq scons pkg-config patchelf build-essential
+
+      - name: Install FFmpeg from conda-forge (LGPL)
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: ffmpeg
+          create-args: >-
+            ffmpeg=${{ env.FFMPEG_VERSION }}=lgpl*
+            pkg-config
+
+      - name: Build (debug + release)
+        run: |
+          cd ffmpeg
+          for target in template_debug template_release; do
+            PKG_CONFIG_PATH="$CONDA_PREFIX/lib/pkgconfig" \
+              scons platform=linux arch=x86_64 target=$target install=0 rpath=0 use_static_cpp=no
+          done
+
+      - name: Bundle dependencies (RUNPATH=$ORIGIN)
+        run: |
+          cd ffmpeg
+          export LIB_PREFIX=libgdffmpeg
+          export ADDON_RES_BASE="res://addons/ffmpeg"
+          export GDEXTENSION_TEMPLATE="$PWD/ffmpeg.gdextension"
+          for target in template_debug template_release; do
+            ../ocio/tools/linux-bundle.sh stage "libgdffmpeg.linux.$target.x86_64.so" \
+              "$GITHUB_WORKSPACE/$BUNDLE" "$CONDA_PREFIX/lib"
+          done
+
+      - name: Verify portability with the build env removed
+        run: |
+          set -euo pipefail
+          cd ffmpeg
+          export LIB_PREFIX=libgdffmpeg
+          export ADDON_RES_BASE="res://addons/ffmpeg"
+          mv "$CONDA_PREFIX" "$CONDA_PREFIX-hidden"
+          for target in template_debug template_release; do
+            ../ocio/tools/linux-bundle.sh verify "libgdffmpeg.linux.$target.x86_64.so" \
+              "$GITHUB_WORKSPACE/$BUNDLE"
+          done
+          echo "--- dlopen test (dependency env is gone):"
+          python3 - <<'PY'
+          import ctypes, glob
+          for f in sorted(glob.glob("dist/ffmpeg/linux64/*.so*")):
+              if "libgdffmpeg" in f:
+                  continue
+              ctypes.CDLL(f)
+          ctypes.CDLL("dist/ffmpeg/linux64/libgdffmpeg.linux.template_release.x86_64.so")
+          print("dlopen OK")
+          PY
+          du -sh dist/ffmpeg/linux64
+          ls dist/ffmpeg/linux64 | wc -l
+
+      - name: Compose descriptor
+        run: |
+          cd ffmpeg
+          GDEXTENSION_TEMPLATE="$PWD/ffmpeg.gdextension" \
+            ../ocio/tools/compose-gdextension.sh "$GITHUB_WORKSPACE/$BUNDLE/ffmpeg.gdextension" \
+            "linux:$GITHUB_WORKSPACE/$BUNDLE"
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-linux64
+          path: dist/ffmpeg/linux64/
           if-no-files-found: warn
