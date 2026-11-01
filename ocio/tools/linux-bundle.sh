@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Linux bundling for the OCIO GDExtension.
 #
-#   stage <main-so> <out-dir>
+#   stage <main-so> <out-dir> <dep-libdir>
 #       Copy the built extension plus the full (transitive) runtime closure
 #       of its shared libraries next to it, and set RUNPATH=$ORIGIN on every
 #       bundled file, so the folder is portable: it works on a machine that
 #       has none of the build-time dependencies installed.
-#       System libraries (glibc, libstdc++, libm, ...) are never bundled.
+#       <dep-libdir> is the lib dir the extension was linked against (conda
+#       env/lib, Homebrew prefix/lib) and is where sonames are resolved.
 #
 #   verify <main-so> <out-dir>
-#       Fail unless every non-system DT_NEEDED entry of the main library
-#       resolves inside <out-dir> (no absolute build-path references left).
+#       Fail unless every DT_NEEDED entry of every bundled library resolves
+#       inside <out-dir> (or is a system library), and every RUNPATH is
+#       exactly $ORIGIN.
 #
-# Run stage once per target (debug/release); they share the same deps dir.
+# Deliberately does not use ldd: its output is not stable across distros
+# (Ubuntu 26 ships one that prints nothing usable here). readelf is.
 #
 # Usage: linux-bundle.sh <stage|verify> ...
 set -euo pipefail
@@ -26,103 +29,97 @@ fail() { echo "linux-bundle: $*" >&2; exit 1; }
 # glibc and friends, the dynamic loader, and GPU/driver libraries (bundling
 # those breaks hardware GL).
 is_system_lib() {
-	local base=$1
-	case "$base" in
+	case "$1" in
 	ld-linux*.so* | libc.so* | libm.so* | libdl.so* | libpthread.so* | \
 		librt.so* | libresolv.so* | libnsl.so* | libutil.so* | libcrypt.so* | \
-		libgcc_s.so* | libmvec.so* | linux-vdso.so* | libstdc++.so*) return 0 ;;
+		libmvec.so* | linux-vdso.so* | libstdc++.so*) return 0 ;;
 	libGL.so* | libGLX.so* | libGLdispatch.so* | libEGL.so* | libGLESv2.so* | \
 		libdrm.so* | libgbm.so* | libglapi.so*) return 0 ;;
 	esac
 	return 1
 }
 
-# Absolute paths a system library is allowed to live in.
-is_system_path() {
-	case "$1" in
-	/lib/* | /lib64/* | /usr/lib/* | /usr/lib64/*) return 0 ;;
-	esac
+# DT_NEEDED sonames of an ELF object.
+needed_of() {
+	readelf -d "$1" | awk '/\(NEEDED\)/ { gsub(/[][]/, "", $NF); print $NF }'
+}
+
+# Where a soname may come from on this machine.
+resolve() { # <dir> <soname>
+	local dir=$1 name=$2 d
+	for d in "$dir" /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu \
+		/lib64 /usr/lib64 /lib /usr/lib; do
+		[ -n "$d" ] && [ -f "$d/$name" ] && { printf '%s\n' "$d/$name"; return 0; }
+	done
 	return 1
 }
 
-stage() { # <main-so> <out-dir> [dep-libdir]
-	local lib=$1 out=$2 libdir=${3:-} name
+stage() { # <main-so> <out-dir> <dep-libdir>
+	local lib=$1 out=$2 libdir=$3 name soname src f
 	[ -f "$lib" ] || fail "library not found: $lib"
+	[ -d "$libdir" ] || fail "dependency dir not found: $libdir"
 	command -v patchelf >/dev/null || fail "patchelf is required (apt install patchelf)"
 	mkdir -p "$out"
 	name=$(basename "$lib")
-
-	# Full transitive closure. When the extension was linked with rpath=0 the
-	# build paths are gone from its RUNPATH, so the caller passes the dep lib
-	# dir (conda env/lib, brew prefix/lib) to resolve them.
-	local resolved base ldd_out
-	local -a deps=()
-	ldd_out=$(LD_LIBRARY_PATH="${libdir:-}" ldd "$lib")
-	if grep -q 'not found' <<<"$ldd_out"; then
-		grep 'not found' <<<"$ldd_out" | sed 's/^/  /' >&2
-		fail "unresolved libraries; pass the dependency lib dir as the third argument"
-	fi
-	while read -r resolved; do
-		[ -n "$resolved" ] || continue
-		base=$(basename "$resolved")
-		is_system_lib "$base" && continue
-		is_system_path "$resolved" && continue
-		deps+=("$resolved")
-	done < <(awk '$2 == "=>" { print $3 }' <<<"$ldd_out")
-
 	cp -f "$lib" "$out/$name"
-	local d
-	for d in "${deps[@]}"; do
-		cp -L -f "$d" "$out/$(basename "$d")"
+	chmod u+w "$out/$name"
+
+	# Breadth-first over DT_NEEDED, resolving each soname once.
+	local -a queue=("$out/$name") bundled=("$name")
+	while [ ${#queue[@]} -gt 0 ]; do
+		f=${queue[0]}
+		queue=("${queue[@]:1}")
+		while read -r soname; do
+			[ -n "$soname" ] || continue
+			is_system_lib "$soname" && continue
+			[ -f "$out/$soname" ] && continue
+			# Prefer the exact library we linked against over the system one.
+			src=$(resolve "$libdir" "$soname") ||
+				fail "cannot resolve $soname (needed by $(basename "$f"))"
+			cp -L -f "$src" "$out/$soname"
+			chmod u+w "$out/$soname"
+			bundled+=("$soname")
+			queue+=("$out/$soname")
+		done < <(needed_of "$f")
 	done
-	chmod -R u+w "$out"  # copied libs may be read-only (package manager)
+
 	# RUNPATH=$ORIGIN on everything: each object resolves its own DT_NEEDED
 	# from the bundle folder, wherever the addon ends up.
+	local d
 	for d in "$out"/*.so*; do
 		patchelf --set-rpath '$ORIGIN' "$d" 2>/dev/null || fail "patchelf failed on $d"
 	done
-	echo "staged $name + ${#deps[@]} libraries in $out"
+	echo "staged $name + $((${#bundled[@]} - 1)) libraries in $out"
 	write_dist "$out"
 }
 
 verify() { # <main-so> <out-dir>
-	local lib=$1 out=$2 bad=0 resolved base staged
+	local lib=$1 out=$2 staged soname f base bad=0 rp
 	[ -f "$lib" ] || fail "library not found: $lib"
 	out=$(cd "$out" && pwd)
 	# Verify the staged copy: its RUNPATH is $ORIGIN, i.e. the bundle dir.
 	staged=$out/$(basename "$lib")
 	[ -f "$staged" ] || fail "staged library not found: $staged"
-	# ldd resolves through the (now $ORIGIN-only) RUNPATH; anything that
-	# resolves outside the bundle or is missing is a portability bug.
-	while read -r token resolved; do
-		[ -n "$token" ] || continue
-		base=$(basename "$token")
-		is_system_lib "$base" && continue
-		is_system_path "${resolved:-}" && continue  # e.g. /lib64/libgomp.so.1
-		case "${resolved:-}" in
-		"$out"/*) ;; # bundled, good
-		"" | MISSING)
-			echo "  missing: $token"
-			bad=$((bad + 1))
-			;;
-		*)
-			echo "  not bundled: $token -> $resolved"
-			bad=$((bad + 1))
-			;;
-		esac
-	done < <(ldd "$staged" | awk '$2 == "=>" { print $1, ($3 == "not" ? "MISSING" : $3) }')
-	if [ "$bad" -ne 0 ]; then
-		fail "$bad library/libraries are not bundled in $out"
-	fi
-	# No build-machine paths may survive in any bundled file's RUNPATH.
-	local rp
-	for lib in "$out"/*.so*; do		rp=$(patchelf --print-rpath "$lib")
+
+	for f in "$out"/*.so*; do
+		while read -r soname; do
+			[ -n "$soname" ] || continue
+			is_system_lib "$soname" && continue
+			if [ ! -f "$out/$soname" ]; then
+				echo "  $(basename "$f") needs $soname, not bundled"
+				bad=$((bad + 1))
+			fi
+		done < <(needed_of "$f")
+		# No build-machine paths may survive in RUNPATH.
+		rp=$(patchelf --print-rpath "$f")
 		case "$rp" in
-		'$ORIGIN'*) ;;
-		*) fail "unexpected RUNPATH '$rp' in $(basename "$lib")" ;;
+		'$ORIGIN' | '$ORIGIN:') ;;
+		*) fail "unexpected RUNPATH '$rp' in $(basename "$f")" ;;
 		esac
 	done
-	echo "verified: $(ls "$out"/*.so* | wc -l | tr -d ' ') libraries, all RUNPATH=\$ORIGIN"
+	[ "$bad" -eq 0 ] || fail "$bad unresolved dependencies in $out"
+	local -a arr=("$out"/*.so*)
+	echo "verified: ${#arr[@]} libraries, all RUNPATH=\$ORIGIN, all deps bundled"
 }
 
 write_dist() { # <out-dir> — dependencies snippet + ready-to-use .gdextension
@@ -156,10 +153,8 @@ write_dist() { # <out-dir> — dependencies snippet + ready-to-use .gdextension
 
 case "${1:-}" in
 stage)
-	if [ $# -lt 3 ] || [ $# -gt 4 ]; then
-		fail "usage: $0 stage <main-so> <out-dir> [dep-libdir]"
-	fi
-	stage "$2" "$3" "${4:-}"
+	[ $# -eq 4 ] || fail "usage: $0 stage <main-so> <out-dir> <dep-libdir>"
+	stage "$2" "$3" "$4"
 	;;
 verify)
 	[ $# -eq 3 ] || fail "usage: $0 verify <main-so> <out-dir>"
