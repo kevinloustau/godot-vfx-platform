@@ -40,12 +40,15 @@ SYSTEM_DLLS = {
     "dxgi.dll", "opengl32.dll", "glu32.dll", "wintrust.dll",
     "powrprof.dll", "wtsapi32.dll", "msimg32.dll", "gdiplus.dll",
     "dnsapi.dll", "winspool.drv", "winhttp.dll", "wininet.dll",
+    "bcryptprimitives.dll", "mswsock.dll",
 }
 SYSTEM_PREFIXES = ("api-ms-win-", "ext-ms-")
 
 
 def is_system_dll(name: str) -> bool:
     n = name.lower()
+    if n in REDIST_DLLS:
+        return False  # bundled: they must ship with the addon
     return n in SYSTEM_DLLS or n.startswith(SYSTEM_PREFIXES)
 
 
@@ -63,6 +66,17 @@ def imports_of(path: str):
         names.add(entry.dll.decode("ascii", "replace").lower())
     pe.close()
     return sorted(names)
+
+
+# MSVC CRT redistributable DLLs: bundled (users may lack the VC++
+# redistributable), resolved from the system dir of the build machine.
+# NOT in SYSTEM_DLLS - they must ship with the addon.
+REDIST_DLLS = {
+    "vcruntime140.dll", "vcruntime140_1.dll", "vcruntime140d.dll",
+    "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
+    "msvcp140_atomic_wait.dll", "msvcp140_codecvt_ids.dll",
+}
+SYSTEM_DIRS = ("C:/Windows/System32",)
 
 
 def find_in(dirpath: str, name: str):
@@ -95,6 +109,11 @@ def stage(main_dll: str, out_dir: str, dep_bin: str) -> int:
             if find_in(out_dir, dll):
                 continue
             src = find_in(dep_bin, dll)
+            if not src and dll in REDIST_DLLS:
+                for d in SYSTEM_DIRS:
+                    src = find_in(d, dll)
+                    if src:
+                        break
             if not src:
                 raise SystemExit(
                     f"windows-bundle: cannot resolve {dll} "
