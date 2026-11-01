@@ -49,6 +49,18 @@ if not is_msvc:
 
 # pkg-config is the default; OCIO_CFLAGS/OCIO_LIBS/OIIO_CFLAGS/OIIO_LIBS
 # env vars override it (Windows: point them at your vcpkg/OCIO build).
+def apply_include_flags(flags):
+	# cl (MSVC) accepts both -I<path> and -I <path>, but scons/MSVC tooling
+	# here gets -I split from its path (Github runner spaces); always emit
+	# the attached /I form on MSVC.
+	for f in flags:
+		if f.startswith("-I"):
+			path = f[2:]
+			if not path:
+				continue
+			env.AppendUnique(CPPPATH=[path])
+
+
 def apply_lib_flags(flags):
 	# -L/-l must go to LIBPATH/LIBS: SCons puts LINKFLAGS *before* the object
 	# files, and with -Wl,--as-needed (the Ubuntu default) libraries listed
@@ -65,8 +77,8 @@ def apply_lib_flags(flags):
 		env.Append(LINKFLAGS=extra)
 
 
-env.Append(CCFLAGS=os.environ.get("OCIO_CFLAGS", "").split())
-env.Append(CCFLAGS=os.environ.get("OIIO_CFLAGS", "").split())
+apply_include_flags(os.environ.get("OCIO_CFLAGS", "").split())
+apply_include_flags(os.environ.get("OIIO_CFLAGS", "").split())
 apply_lib_flags(os.environ.get("OCIO_LIBS", "").split())
 apply_lib_flags(os.environ.get("OIIO_LIBS", "").split())
 use_pkg = not (os.environ.get("OCIO_CFLAGS") and os.environ.get("OCIO_LIBS")
@@ -80,7 +92,7 @@ for name, lib in (("OpenColorIO", "OCIO"), ("OpenImageIO", "OIIO")):
 	if cflags is None or libs is None:
 		print("pkg-config cannot find %s (needed by the OCIO extension)" % name)
 		Exit(1)
-	env.Append(CCFLAGS=cflags)
+	apply_include_flags(cflags)
 	apply_lib_flags(libs)
 	libdir = try_pkg(["pkg-config", "--variable=libdir", name])
 	if libdir and env["platform"] != "windows":
